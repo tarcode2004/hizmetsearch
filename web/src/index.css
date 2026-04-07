@@ -1,0 +1,102 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --color-background: #fafaf9;
+  --color-foreground: #1c1917;
+  --color-card: #ffffff;
+  --color-card-foreground: #1c1917;
+  --color-primary: #0d6e4f;
+  --color-primary-foreground: #ffffff;
+  --color-secondary: #f5f0eb;
+  --color-secondary-foreground: #44403c;
+  --color-muted: #f5f5f4;
+  --color-muted-foreground: #78716c;
+  --color-accent: #d4a853;
+  --color-accent-foreground: #1c1917;
+  --color-border: #e7e5e4;
+  --color-input: #e7e5e4;
+  --color-ring: #0d6e4f;
+  --color-destructive: #dc2626;
+
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-arabic: "Amiri", "Traditional Arabic", serif;
+
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --radius-xl: 1rem;
+}
+
+/* Dark mode overrides */
+.dark {
+  --color-background: #0c0a09;
+  --color-foreground: #fafaf9;
+  --color-card: #1c1917;
+  --color-card-foreground: #fafaf9;
+  --color-primary: #10b981;
+  --color-primary-foreground: #022c1c;
+  --color-secondary: #292524;
+  --color-secondary-foreground: #e7e5e4;
+  --color-muted: #1c1917;
+  --color-muted-foreground: #a8a29e;
+  --color-accent: #f59e0b;
+  --color-accent-foreground: #1c1917;
+  --color-border: #292524;
+  --color-input: #292524;
+  --color-ring: #10b981;
+  --color-destructive: #ef4444;
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-family: var(--font-sans);
+    margin: 0;
+  }
+  [dir="rtl"],
+  .text-arabic {
+    font-family: var(--font-arabic);
+    direction: rtl;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 3px;
+}
+
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+.streaming-cursor::after {
+  content: "▊";
+  animation: blink 1s infinite;
+  color: var(--color-primary);
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+.animate-fade-in {
+  animation: fade-in 0.2s ease-out;
+}
+.animate-scale-in {
+  animation: scale-in 0.2s ease-out;
+}

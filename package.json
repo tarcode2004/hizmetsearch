@@ -1,0 +1,10 @@
+{
+  "name": "hizmetsearch",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter web dev",
+    "build": "pnpm --filter web build",
+    "dev:convex": "pnpm --filter web exec convex dev",
+    "test:e2e": "pnpm --filter web exec playwright test"
+  }
+}
