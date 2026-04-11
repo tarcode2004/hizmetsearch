@@ -2,52 +2,109 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-@theme {
-  --color-background: #fafaf9;
-  --color-foreground: #1c1917;
-  --color-card: #ffffff;
-  --color-card-foreground: #1c1917;
-  --color-primary: #0d6e4f;
-  --color-primary-foreground: #ffffff;
-  --color-secondary: #f5f0eb;
-  --color-secondary-foreground: #44403c;
-  --color-muted: #f5f5f4;
-  --color-muted-foreground: #78716c;
-  --color-accent: #d4a853;
-  --color-accent-foreground: #1c1917;
-  --color-border: #e7e5e4;
-  --color-input: #e7e5e4;
-  --color-ring: #0d6e4f;
-  --color-destructive: #dc2626;
+/* ──────────────────────────────────────────────────────────────
+   HizmetSearch design tokens — OKLCH for perceptual uniformity.
+   The semantic API (--color-primary etc.) is kept stable so all
+   existing components work without changes.
+   ────────────────────────────────────────────────────────────── */
 
+@theme {
+  /* ─── Typography ─── */
+  --font-display: "Fraunces", "Source Serif Pro", Georgia, serif;
   --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
   --font-arabic: "Amiri", "Traditional Arabic", serif;
 
+  /* ─── Neutrals (warm ink on warm paper) ─── */
+  --color-background: oklch(98.5% 0.004 80);       /* warmer paper white */
+  --color-foreground: oklch(20% 0.012 80);          /* warm ink */
+  --color-card: oklch(100% 0 0);
+  --color-card-foreground: oklch(20% 0.012 80);
+  --color-secondary: oklch(95% 0.018 80);           /* warm stone */
+  --color-secondary-foreground: oklch(35% 0.015 80);
+  --color-muted: oklch(96% 0.006 80);
+  --color-muted-foreground: oklch(48% 0.015 80);
+  --color-border: oklch(91% 0.008 80);
+  --color-input: oklch(91% 0.008 80);
+
+  /* ─── Primary — scholarly green ─── */
+  --color-primary: oklch(48% 0.11 165);
+  --color-primary-foreground: oklch(100% 0 0);
+  --color-primary-soft: oklch(95% 0.03 165);        /* tint for hovers/backgrounds */
+  --color-ring: oklch(48% 0.11 165);
+
+  /* ─── Accent — the old amber-gold, kept as legacy alias ─── */
+  --color-accent: oklch(78% 0.13 85);
+  --color-accent-foreground: oklch(20% 0.012 80);
+
+  /* ─── Gilt gold — reserved for citations + focus highlights ─── */
+  --color-gilt: oklch(78% 0.13 85);
+  --color-gilt-deep: oklch(62% 0.14 75);
+
+  /* ─── Tertiary accents (used sparingly) ─── */
+  --color-hadid: oklch(62% 0.11 220);               /* teal — data viz */
+  --color-lapis: oklch(42% 0.15 258);               /* deep blue — reading mark rule */
+  --color-mark: oklch(94% 0.08 95);                 /* soft yellow chunk highlight */
+
+  /* ─── Semantic ─── */
+  --color-destructive: oklch(56% 0.22 27);
+
+  /* ─── Radii ─── */
   --radius-sm: 0.375rem;
   --radius-md: 0.5rem;
   --radius-lg: 0.75rem;
   --radius-xl: 1rem;
+  --radius-2xl: 1.25rem;
+  --radius-3xl: 1.75rem;
+
+  /* ─── Elevation ─── */
+  --shadow-xs: 0 1px 2px oklch(20% 0.01 80 / 0.04);
+  --shadow-sm: 0 2px 4px oklch(20% 0.01 80 / 0.06), 0 1px 2px oklch(20% 0.01 80 / 0.04);
+  --shadow-md: 0 4px 10px oklch(20% 0.01 80 / 0.08), 0 2px 4px oklch(20% 0.01 80 / 0.05);
+  --shadow-lg: 0 12px 28px oklch(20% 0.01 80 / 0.10), 0 4px 8px oklch(20% 0.01 80 / 0.06);
+  --shadow-xl: 0 24px 50px oklch(20% 0.01 80 / 0.14), 0 8px 16px oklch(20% 0.01 80 / 0.08);
+  --shadow-gilt: 0 0 0 1px oklch(78% 0.13 85 / 0.4), 0 4px 12px oklch(78% 0.13 85 / 0.15);
 }
 
-/* Dark mode overrides */
+/* ─── Dark mode — reading-lamp warmth, not pure inversion ─── */
 .dark {
-  --color-background: #0c0a09;
-  --color-foreground: #fafaf9;
-  --color-card: #1c1917;
-  --color-card-foreground: #fafaf9;
-  --color-primary: #10b981;
-  --color-primary-foreground: #022c1c;
-  --color-secondary: #292524;
-  --color-secondary-foreground: #e7e5e4;
-  --color-muted: #1c1917;
-  --color-muted-foreground: #a8a29e;
-  --color-accent: #f59e0b;
-  --color-accent-foreground: #1c1917;
-  --color-border: #292524;
-  --color-input: #292524;
-  --color-ring: #10b981;
-  --color-destructive: #ef4444;
+  --color-background: oklch(14% 0.008 70);          /* warm charcoal */
+  --color-foreground: oklch(95% 0.005 80);
+  --color-card: oklch(18% 0.01 70);
+  --color-card-foreground: oklch(95% 0.005 80);
+  --color-secondary: oklch(24% 0.012 70);
+  --color-secondary-foreground: oklch(88% 0.008 80);
+  --color-muted: oklch(20% 0.01 70);
+  --color-muted-foreground: oklch(65% 0.012 80);
+  --color-border: oklch(26% 0.012 70);
+  --color-input: oklch(26% 0.012 70);
+
+  --color-primary: oklch(68% 0.13 165);
+  --color-primary-foreground: oklch(12% 0.02 165);
+  --color-primary-soft: oklch(22% 0.04 165);
+  --color-ring: oklch(68% 0.13 165);
+
+  --color-accent: oklch(75% 0.12 85);
+  --color-gilt: oklch(75% 0.12 85);
+  --color-gilt-deep: oklch(65% 0.13 75);
+
+  --color-hadid: oklch(70% 0.11 220);
+  --color-lapis: oklch(62% 0.15 258);
+  --color-mark: oklch(30% 0.08 95);
+
+  --color-destructive: oklch(65% 0.22 27);
+
+  /* Shadows in dark mode need to be darker to read */
+  --shadow-xs: 0 1px 2px oklch(0% 0 0 / 0.3);
+  --shadow-sm: 0 2px 4px oklch(0% 0 0 / 0.35), 0 1px 2px oklch(0% 0 0 / 0.25);
+  --shadow-md: 0 4px 10px oklch(0% 0 0 / 0.4), 0 2px 4px oklch(0% 0 0 / 0.3);
+  --shadow-lg: 0 12px 28px oklch(0% 0 0 / 0.45), 0 4px 8px oklch(0% 0 0 / 0.35);
+  --shadow-xl: 0 24px 50px oklch(0% 0 0 / 0.55), 0 8px 16px oklch(0% 0 0 / 0.4);
 }
+
+/* ──────────────────────────────────────────────────────────────
+   Base layer
+   ────────────────────────────────────────────────────────────── */
 
 @layer base {
   * {
@@ -56,25 +113,123 @@
   body {
     @apply bg-background text-foreground antialiased;
     font-family: var(--font-sans);
+    font-feature-settings: "cv11", "ss03", "ss04", "calt";  /* Inter stylistic sets */
     margin: 0;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
   }
+
+  /* RTL passages */
   [dir="rtl"],
   .text-arabic {
     font-family: var(--font-arabic);
     direction: rtl;
   }
+
+  /* ─── Type scale utility classes ─── */
+  .text-display-1 {
+    font-family: var(--font-display);
+    font-size: clamp(2.5rem, 11vw, 4rem);
+    line-height: 0.95;
+    letter-spacing: -0.02em;
+    font-weight: 600;
+    font-optical-sizing: auto;
+  }
+  .text-display-2 {
+    font-family: var(--font-display);
+    font-size: clamp(2rem, 8vw, 3rem);
+    line-height: 1;
+    letter-spacing: -0.02em;
+    font-weight: 600;
+    font-optical-sizing: auto;
+  }
+  .text-h1-serif {
+    font-family: var(--font-display);
+    font-size: clamp(1.75rem, 6vw, 2.25rem);
+    line-height: 1.1;
+    letter-spacing: -0.015em;
+    font-weight: 600;
+    font-optical-sizing: auto;
+  }
+  .text-h2-serif {
+    font-family: var(--font-display);
+    font-size: clamp(1.375rem, 5vw, 1.75rem);
+    line-height: 1.2;
+    letter-spacing: -0.01em;
+    font-weight: 500;
+    font-optical-sizing: auto;
+  }
+  .text-body-lg {
+    font-size: 1.0625rem;
+    line-height: 1.6;
+  }
+  @media (min-width: 640px) {
+    .text-body-lg {
+      font-size: 1.125rem;
+    }
+  }
+
+  /* ─── Drop cap for scholarly reading passages ─── */
+  .drop-cap::first-letter {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 3.8em;
+    float: left;
+    line-height: 0.85;
+    margin: 0.1em 0.08em -0.1em 0;
+    color: var(--color-primary);
+  }
+
+  /* ─── Global focus ring (double ring — works on any bg) ─── */
+  *:focus-visible {
+    outline: none;
+    box-shadow:
+      0 0 0 2px var(--color-background),
+      0 0 0 4px oklch(48% 0.11 165 / 0.6);
+    border-radius: inherit;
+    transition: box-shadow 120ms ease-out;
+  }
+  .dark *:focus-visible {
+    box-shadow:
+      0 0 0 2px var(--color-background),
+      0 0 0 4px oklch(68% 0.13 165 / 0.6);
+  }
+
+  /* Respect reduced motion */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
 }
 
+/* ──────────────────────────────────────────────────────────────
+   Scrollbar
+   ────────────────────────────────────────────────────────────── */
+
 ::-webkit-scrollbar {
-  width: 6px;
+  width: 8px;
+  height: 8px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
   background: var(--color-border);
-  border-radius: 3px;
+  border-radius: 4px;
+  border: 2px solid var(--color-background);
 }
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-muted-foreground);
+}
+
+/* ──────────────────────────────────────────────────────────────
+   Streaming cursor — the only CSS animation kept (Framer does the rest)
+   ────────────────────────────────────────────────────────────── */
 
 @keyframes blink {
   0%, 50% { opacity: 1; }
@@ -84,19 +239,51 @@
   content: "▊";
   animation: blink 1s infinite;
   color: var(--color-primary);
+  margin-left: 2px;
+  background: linear-gradient(90deg, var(--color-primary), transparent);
+  background-clip: text;
+  -webkit-background-clip: text;
 }
 
-@keyframes fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
+/* ──────────────────────────────────────────────────────────────
+   Citation chip base styles (used by <CitationChip /> ornament)
+   ────────────────────────────────────────────────────────────── */
+
+.citation-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  padding: 0 0.3rem;
+  margin: 0 0.15rem;
+  border-radius: 9999px;
+  font-family: var(--font-display);
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--color-gilt-deep);
+  background: oklch(78% 0.13 85 / 0.15);
+  border: 1px solid oklch(78% 0.13 85 / 0.35);
+  text-decoration: none !important;
+  vertical-align: baseline;
+  position: relative;
+  top: -0.15em;
+  transition: all 180ms ease-out;
+  cursor: pointer;
 }
-@keyframes scale-in {
-  from { opacity: 0; transform: scale(0.95); }
-  to { opacity: 1; transform: scale(1); }
+.citation-chip:hover {
+  background: oklch(78% 0.13 85 / 0.25);
+  border-color: oklch(78% 0.13 85 / 0.65);
+  box-shadow: var(--shadow-gilt);
+  color: var(--color-gilt-deep);
 }
-.animate-fade-in {
-  animation: fade-in 0.2s ease-out;
+.dark .citation-chip {
+  color: oklch(85% 0.1 85);
+  background: oklch(75% 0.12 85 / 0.15);
+  border-color: oklch(75% 0.12 85 / 0.35);
 }
-.animate-scale-in {
-  animation: scale-in 0.2s ease-out;
+.dark .citation-chip:hover {
+  background: oklch(75% 0.12 85 / 0.28);
+  border-color: oklch(75% 0.12 85 / 0.7);
 }

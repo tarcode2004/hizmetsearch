@@ -12,6 +12,10 @@ class SearchRequest(BaseModel):
     top_k: int = Field(default=5, ge=1, le=20)
     language: Optional[str] = Field(default=None, pattern=r"^(tr|ar|en|tr\+ar|ota)$")
     collection: Optional[str] = None
+    # Logical category that the API translates into a multi-criteria filter.
+    # See `app.routes.search.CATEGORY_SPECS`. When set, takes precedence over
+    # the bare `collection` field.
+    category: Optional[str] = Field(default=None, pattern=r"^(risale|risale_dersleri|pirlanta|hizmet)$")
     use_reranker: bool = True
 
 
@@ -30,6 +34,8 @@ class ChunkResponse(BaseModel):
     page_number: Optional[int] = None
     timestamp_start: Optional[float] = None
     timestamp_end: Optional[float] = None
+    source_url: Optional[str] = None
+    source_ext: Optional[str] = None
 
 
 class SearchResultItem(BaseModel):

@@ -1,29 +1,20 @@
-import { mutation } from "../_generated/server";
-import { v } from "convex/values";
-
 /**
- * Per-model token limits per plan.
+ * Token-usage and subscription bookkeeping.
  *
- * Pricing reference (April 2026):
- *   Claude Opus 4.6:  $5 in / $25 out per 1M  → ~$19/1M blended (30/70)
- *   Gemini 3.1 Pro:   $2 in / $12 out per 1M  → ~$9/1M blended
- *
- * Cost ceilings at max usage:
- *   Free    : 20K Claude ($0.38) / 100K Gemini ($0.90)
- *   Pro     : 200K Claude ($3.80) / 1M Gemini ($9.00)  — $9.99 plan
- *   Scholar : 1M Claude ($19.00) / 5M Gemini ($45.00) — $24.99 plan
+ * `trackUsage` is internal — only the chat / search actions may call it,
+ * never the client. Plan upgrades + cancels are handled by the Stripe
+ * webhook handler in `convex/http.ts` via the internal mutations in
+ * `convex/billing.ts`.
  */
-export const PLAN_LIMITS: Record<
-  string,
-  { claude: number; gemini: number }
-> = {
-  free: { claude: 20_000, gemini: 100_000 },
-  pro: { claude: 200_000, gemini: 1_000_000 },
-  scholar: { claude: 1_000_000, gemini: 5_000_000 },
-};
+import { internalMutation } from "../_generated/server";
+import { v } from "convex/values";
+import { PLAN_LIMITS } from "../lib/planLimits";
 
-/** Create initial subscription for new user (free tier). */
-export const initSubscription = mutation({
+/** Re-exported for convenience; canonical definition is in lib/planLimits.ts. */
+export { PLAN_LIMITS };
+
+/** Create the initial free-tier subscription for a brand-new user. */
+export const initSubscription = internalMutation({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {
     const existing = await ctx.db
@@ -43,13 +34,22 @@ export const initSubscription = mutation({
       geminiTokensUsed: 0,
       claudeTokensLimit: PLAN_LIMITS.free.claude,
       geminiTokensLimit: PLAN_LIMITS.free.gemini,
+      claudeCreditTokens: 0,
+      geminiCreditTokens: 0,
+      payAsYouGoEnabled: false,
       resetAt: nextMonth,
     });
   },
 });
 
-/** Increment token usage after a query/chat for a specific model. */
-export const trackUsage = mutation({
+/**
+ * Increment token usage after a query/chat for a specific model.
+ *
+ * Credit-pack tokens are consumed first; only when those are exhausted do
+ * we draw down the monthly allotment. Auto-resets the monthly counters
+ * once the resetAt timestamp is reached.
+ */
+export const trackUsage = internalMutation({
   args: {
     userId: v.id("users"),
     model: v.union(v.literal("claude"), v.literal("gemini")),
@@ -63,84 +63,62 @@ export const trackUsage = mutation({
     if (!sub) return;
 
     const now = Date.now();
+    const ONE_DAY = 24 * 60 * 60 * 1000;
     const isClaude = args.model === "claude";
 
-    // Auto-reset if past reset date
+    // Auto-reset monthly counters if past resetAt
+    let claudeUsed = sub.claudeTokensUsed;
+    let geminiUsed = sub.geminiTokensUsed;
+    let resetAt = sub.resetAt;
     if (now >= sub.resetAt) {
-      await ctx.db.patch(sub._id, {
-        claudeTokensUsed: isClaude ? args.tokensConsumed : 0,
-        geminiTokensUsed: isClaude ? 0 : args.tokensConsumed,
-        resetAt: now + 30 * 24 * 60 * 60 * 1000,
-      });
-    } else {
-      await ctx.db.patch(sub._id, {
-        claudeTokensUsed: isClaude
-          ? sub.claudeTokensUsed + args.tokensConsumed
-          : sub.claudeTokensUsed,
-        geminiTokensUsed: isClaude
-          ? sub.geminiTokensUsed
-          : sub.geminiTokensUsed + args.tokensConsumed,
-      });
+      claudeUsed = 0;
+      geminiUsed = 0;
+      resetAt = now + 30 * ONE_DAY;
     }
-  },
-});
 
-/** Upgrade plan (called after Stripe webhook confirms payment). */
-export const upgradePlan = mutation({
-  args: {
-    userId: v.id("users"),
-    plan: v.union(v.literal("pro"), v.literal("scholar")),
-    stripeCustomerId: v.string(),
-    stripeSubscriptionId: v.string(),
-    currentPeriodEnd: v.number(),
-  },
-  handler: async (ctx, args) => {
-    const sub = await ctx.db
-      .query("subscriptions")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .first();
-
-    const limits = PLAN_LIMITS[args.plan];
-    const data = {
-      plan: args.plan,
-      status: "active" as const,
-      stripeCustomerId: args.stripeCustomerId,
-      stripeSubscriptionId: args.stripeSubscriptionId,
-      currentPeriodEnd: args.currentPeriodEnd,
-      claudeTokensLimit: limits.claude,
-      geminiTokensLimit: limits.gemini,
-    };
-
-    if (sub) {
-      await ctx.db.patch(sub._id, data);
-    } else {
-      const now = Date.now();
-      await ctx.db.insert("subscriptions", {
-        userId: args.userId,
-        ...data,
-        claudeTokensUsed: 0,
-        geminiTokensUsed: 0,
-        resetAt: now + 30 * 24 * 60 * 60 * 1000,
-      });
+    // Auto-reset daily counters if past dayResetAt
+    let claudeToday = sub.claudeTokensToday ?? 0;
+    let geminiToday = sub.geminiTokensToday ?? 0;
+    let dayResetAt = sub.dayResetAt ?? 0;
+    if (now >= dayResetAt) {
+      claudeToday = 0;
+      geminiToday = 0;
+      dayResetAt = now + ONE_DAY;
     }
-  },
-});
 
-/** Cancel subscription (downgrade to free). */
-export const cancelPlan = mutation({
-  args: { userId: v.id("users") },
-  handler: async (ctx, args) => {
-    const sub = await ctx.db
-      .query("subscriptions")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .first();
-    if (!sub) return;
+    // Drain credit pack first (does NOT count against the daily cap —
+    // credits are pre-paid)
+    let claudeCredit = sub.claudeCreditTokens ?? 0;
+    let geminiCredit = sub.geminiCreditTokens ?? 0;
+    let remaining = args.tokensConsumed;
+    if (isClaude && claudeCredit > 0) {
+      const drawn = Math.min(claudeCredit, remaining);
+      claudeCredit -= drawn;
+      remaining -= drawn;
+    } else if (!isClaude && geminiCredit > 0) {
+      const drawn = Math.min(geminiCredit, remaining);
+      geminiCredit -= drawn;
+      remaining -= drawn;
+    }
+
+    // Apply remainder to monthly + daily allotments
+    if (isClaude) {
+      claudeUsed += remaining;
+      claudeToday += remaining;
+    } else {
+      geminiUsed += remaining;
+      geminiToday += remaining;
+    }
 
     await ctx.db.patch(sub._id, {
-      plan: "free",
-      status: "canceled",
-      claudeTokensLimit: PLAN_LIMITS.free.claude,
-      geminiTokensLimit: PLAN_LIMITS.free.gemini,
+      claudeTokensUsed: claudeUsed,
+      geminiTokensUsed: geminiUsed,
+      claudeCreditTokens: claudeCredit,
+      geminiCreditTokens: geminiCredit,
+      claudeTokensToday: claudeToday,
+      geminiTokensToday: geminiToday,
+      dayResetAt,
+      resetAt,
     });
   },
 });

@@ -5,21 +5,30 @@ import { useTranslation } from "@/lib/i18n/I18nProvider";
 
 interface FilterPanelProps {
   language: string | null;
-  collection: string | null;
+  category: string | null;
   onLanguageChange: (lang: string | null) => void;
-  onCollectionChange: (col: string | null) => void;
+  onCategoryChange: (cat: string | null) => void;
   resultCount: number;
   retrievalTimeMs: number;
 }
 
 const LANGUAGES = ["tr", "ar", "en", "ota"];
-const COLLECTIONS = ["Risale-i Nur", "Hizmet", "Tefsir", "Hadis"];
+
+// Each entry maps a category id (sent to the API) to a display label.
+// The backend translates the id into a multi-criteria Qdrant filter — see
+// `hizmetsearch/api/app/routes/search.py:CATEGORY_SPECS`.
+const CATEGORIES: Array<{ id: string; label: string }> = [
+  { id: "risale", label: "Risale" },
+  { id: "risale_dersleri", label: "Risale Dersleri" },
+  { id: "pirlanta", label: "Pırlanta" },
+  { id: "hizmet", label: "Hizmet" },
+];
 
 export function FilterPanel({
   language,
-  collection,
+  category,
   onLanguageChange,
-  onCollectionChange,
+  onCategoryChange,
   resultCount,
   retrievalTimeMs,
 }: FilterPanelProps) {
@@ -54,21 +63,21 @@ export function FilterPanel({
 
       <div className="h-4 w-px bg-border" />
 
-      {/* Collection filter */}
+      {/* Category filter */}
       <div className="flex items-center gap-1.5">
         <Library className="h-3.5 w-3.5 text-muted-foreground" />
         <div className="flex gap-1">
           <FilterChip
             label={t("search.filterAll")}
-            active={collection === null}
-            onClick={() => onCollectionChange(null)}
+            active={category === null}
+            onClick={() => onCategoryChange(null)}
           />
-          {COLLECTIONS.map((c) => (
+          {CATEGORIES.map((c) => (
             <FilterChip
-              key={c}
-              label={c}
-              active={collection === c}
-              onClick={() => onCollectionChange(collection === c ? null : c)}
+              key={c.id}
+              label={c.label}
+              active={category === c.id}
+              onClick={() => onCategoryChange(category === c.id ? null : c.id)}
             />
           ))}
         </div>

@@ -97,6 +97,60 @@ export const PLANS: Record<Plan, PlanConfig> = {
 
 export const VISIBLE_PLANS: Plan[] = ["free", "pro", "scholar"];
 
+/**
+ * One-time top-up credit packs. Available to any paid tier (and to Free as
+ * a small "boost" option). Credits never expire and stack on top of the
+ * monthly allotment of whatever plan the user is on.
+ */
+export interface CreditPack {
+  id: string;
+  name: string;
+  price: string;
+  priceUsd: number;
+  claudeTokens: number;
+  geminiTokens: number;
+  /** Optional badge such as "Best value" */
+  badge?: string;
+}
+
+export const CREDIT_PACKS: CreditPack[] = [
+  {
+    id: "spark",
+    name: "Spark",
+    price: "$5",
+    priceUsd: 5,
+    claudeTokens: 100_000,
+    geminiTokens: 500_000,
+  },
+  {
+    id: "lantern",
+    name: "Lantern",
+    price: "$15",
+    priceUsd: 15,
+    claudeTokens: 400_000,
+    geminiTokens: 2_000_000,
+    badge: "Best value",
+  },
+  {
+    id: "minaret",
+    name: "Minaret",
+    price: "$50",
+    priceUsd: 50,
+    claudeTokens: 2_000_000,
+    geminiTokens: 10_000_000,
+  },
+];
+
+/**
+ * Pay-as-you-go (metered) pricing. Available as an add-on to any paid plan.
+ * The user is billed monthly for any tokens consumed beyond their plan
+ * allotment, at a small markup over raw API cost.
+ */
+export const PAY_AS_YOU_GO = {
+  claudePerMillion: 22, // USD per 1M Claude tokens (vs $19 raw)
+  geminiPerMillion: 11, // USD per 1M Gemini tokens (vs $9 raw)
+};
+
 export function formatTokens(n: number): string {
   if (n >= 1_000_000_000) return "∞";
   if (n >= 1_000_000)

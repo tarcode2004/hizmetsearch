@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import {
   Mic,
-  MicOff,
   Square,
   Volume2,
   VolumeX,
@@ -10,7 +9,6 @@ import {
   ChevronUp,
   Globe,
   RotateCcw,
-  X,
 } from "lucide-react";
 import { cn, detectArabicScript, truncate } from "@/lib/utils";
 import { AudioVisualizer } from "./AudioVisualizer";

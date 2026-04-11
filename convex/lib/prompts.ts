@@ -1,67 +1,237 @@
 /**
- * System prompts for search and chat modes.
+ * System prompts for search + chat.
+ *
+ * These are compiled from the single source of truth at
+ * `data/prompts/system_prompts.yaml`. When that file changes, run
+ * `python scripts/sync_prompts.py` to regenerate this file.
+ *
+ * DO NOT EDIT THE PROMPT BODIES BY HAND — edit the YAML instead.
+ *
+ * The Python `PromptBuilder` and this file produce byte-identical
+ * prompts, so offline evaluation results transfer to production.
  */
 
-interface SourceContext {
+import {
+  SEARCH_ANSWER_EN,
+  SEARCH_ANSWER_TR,
+  CHAT_GEMINI,
+  CHAT_GEMINI_LEAN,
+  CHAT_CLAUDE,
+  CHAT_CLAUDE_LEAN,
+} from "./prompts.generated";
+
+export {
+  SEARCH_ANSWER_EN,
+  SEARCH_ANSWER_TR,
+  CHAT_GEMINI,
+  CHAT_GEMINI_LEAN,
+  CHAT_CLAUDE,
+  CHAT_CLAUDE_LEAN,
+};
+
+// ── Types ──────────────────────────────────────────────────────
+
+export interface SourceContext {
   index: number;
   title: string;
   author: string;
   text: string;
+  collection?: string;
+  language?: string;
+  section?: string;
   page?: number | null;
   timestamp?: number | null;
+  timestampEnd?: number | null;
 }
+
+export interface BuiltPrompt {
+  body: string;
+  /** Stable prefix — safe to mark as Claude ephemeral-cached. */
+  cachedPrefix: string;
+  /** Per-request suffix — must be re-sent each call. */
+  uncachedSuffix: string;
+  promptId: string;
+}
+
+// ── Formatting helpers ─────────────────────────────────────────
+
+/** Number of chars per source passed to the LLM. Keep in sync with Python. */
+export const MAX_CHARS_PER_SOURCE = 1200;
 
 export function formatSourcesForLLM(sources: SourceContext[]): string {
   return sources
     .map((s) => {
-      const location = s.page
-        ? `p. ${s.page}`
-        : s.timestamp
-          ? `${Math.floor(s.timestamp / 60)}:${Math.floor(s.timestamp % 60).toString().padStart(2, "0")}`
-          : "";
-      return `[Source ${s.index}] (${s.title}${s.author ? `, ${s.author}` : ""}${location ? `, ${location}` : ""})\n${s.text}`;
+      const locationBits: string[] = [];
+      if (s.section) locationBits.push(s.section);
+      if (s.page != null) locationBits.push(`p. ${s.page}`);
+      if (s.timestamp != null) {
+        const fmt = (t: number) => {
+          const m = Math.floor(t / 60);
+          const sec = Math.floor(t % 60).toString().padStart(2, "0");
+          return `${m}:${sec}`;
+        };
+        if (s.timestampEnd != null) {
+          locationBits.push(`${fmt(s.timestamp)}–${fmt(s.timestampEnd)}`);
+        } else {
+          locationBits.push(fmt(s.timestamp));
+        }
+      }
+
+      const contextBits: string[] = [];
+      if (s.collection) contextBits.push(s.collection);
+      if (s.language) contextBits.push(s.language);
+
+      const headerParts = [`[Source ${s.index}]`];
+      if (s.title) headerParts.push(s.title);
+      if (s.author) headerParts.push(`— ${s.author}`);
+      if (locationBits.length) headerParts.push(`(${locationBits.join(", ")})`);
+      if (contextBits.length) headerParts.push(`[${contextBits.join(", ")}]`);
+
+      const body =
+        s.text.length > MAX_CHARS_PER_SOURCE
+          ? s.text.slice(0, MAX_CHARS_PER_SOURCE).trimEnd() + "…"
+          : s.text;
+
+      return `${headerParts.join(" ")}\n${body}`;
     })
     .join("\n\n");
 }
 
-export const SEARCH_ANSWER_PROMPT = `You are HizmetSearch AI, a scholarly assistant specializing in Islamic scholarship, particularly the Risale-i Nur collection and Hizmet movement literature.
+function formatConversationHistory(
+  history: { role: string; content: string }[] | undefined
+): string {
+  if (!history || history.length === 0) return "(no prior messages)";
+  return history
+    .slice(-10)
+    .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
+    .join("\n\n");
+}
 
-INSTRUCTIONS:
-- Synthesize a comprehensive answer using ONLY the provided sources
-- Use inline citations [1], [2], etc. referencing source numbers
-- Respond in the SAME LANGUAGE as the user's query
-- If sources are insufficient, acknowledge this clearly
-- Use markdown formatting: **bold** for key terms, paragraphs for structure
-- Do NOT fabricate information not present in the sources
-- Be respectful and scholarly in tone
+// ── Builder ────────────────────────────────────────────────────
 
-SOURCES:
-{sources}
+interface BuildOptions {
+  sources: SourceContext[];
+  query: string;
+  conversationHistory?: { role: string; content: string }[];
+  language?: "tr" | "en";
+}
 
-Answer the following query:`;
+/**
+ * Build a filled prompt for the search-answer use case.
+ * Automatically picks the TR or EN template based on `language`.
+ */
+export function buildSearchAnswerPrompt(opts: BuildOptions): BuiltPrompt {
+  const template = opts.language === "tr" ? SEARCH_ANSWER_TR : SEARCH_ANSWER_EN;
+  return fillTemplate(template, opts);
+}
 
-export const CHAT_GEMINI_PROMPT = `You are HizmetSearch AI in Exploration mode. You are a warm, knowledgeable scholarly companion specializing in Islamic scholarship.
+/** Build a chat prompt for the Gemini exploration mode. */
+export function buildChatGeminiPrompt(opts: BuildOptions): BuiltPrompt {
+  return fillTemplate(CHAT_GEMINI, opts);
+}
 
-BEHAVIOR:
-- Engage conversationally and encourage deeper exploration
-- Draw broader theological and philosophical connections
-- You may suggest related topics the user might find interesting
-- Still cite sources when quoting directly: [1], [2]
-- Respond in the same language as the user
-- Be warm, encouraging, and intellectually curious
+/** Build a chat prompt for the Claude precision mode. */
+export function buildChatClaudePrompt(opts: BuildOptions): BuiltPrompt {
+  return fillTemplate(CHAT_CLAUDE, opts);
+}
 
-SOURCES:
-{sources}`;
+/**
+ * Lean Gemini chat prompt — used when no retrieval sources are available
+ * (RAG offline / empty results). Saves ~500 tokens per call vs the full
+ * version because it skips the source-citation rules entirely.
+ */
+export function buildChatGeminiLeanPrompt(opts: BuildOptions): BuiltPrompt {
+  return fillTemplate(CHAT_GEMINI_LEAN, opts);
+}
 
-export const CHAT_CLAUDE_PROMPT = `You are HizmetSearch AI in Precision mode. You are a strict scholarly assistant.
+/**
+ * Lean Claude chat prompt — counterpart to `buildChatGeminiLeanPrompt`,
+ * used on the no-retrieval path so we don't waste tokens on citation
+ * rules when there's nothing to cite.
+ */
+export function buildChatClaudeLeanPrompt(opts: BuildOptions): BuiltPrompt {
+  return fillTemplate(CHAT_CLAUDE_LEAN, opts);
+}
 
-RULES:
-- Every factual claim MUST have a citation [1], [2] from the provided sources
-- Do NOT speculate or make claims beyond what the sources state
-- If sources don't cover a topic, say so explicitly
-- Respond in the same language as the user
-- Be precise, accurate, and methodical
-- Prefer direct quotation over paraphrase when possible
+// ── Internal ───────────────────────────────────────────────────
 
-SOURCES:
-{sources}`;
+interface CompiledTemplate {
+  id: string;
+  version: string;
+  body: string;
+  cacheAfter?: string;
+}
+
+function fillTemplate(template: CompiledTemplate, opts: BuildOptions): BuiltPrompt {
+  const filled = template.body
+    .replace("{sources}", formatSourcesForLLM(opts.sources))
+    .replace("{query}", opts.query)
+    .replace(
+      "{conversation_history}",
+      formatConversationHistory(opts.conversationHistory)
+    );
+
+  const { cachedPrefix, uncachedSuffix } = splitForCaching(filled, template.cacheAfter);
+
+  return {
+    body: filled,
+    cachedPrefix,
+    uncachedSuffix,
+    promptId: template.id,
+  };
+}
+
+function splitForCaching(
+  body: string,
+  marker: string | undefined
+): { cachedPrefix: string; uncachedSuffix: string } {
+  if (!marker) return { cachedPrefix: "", uncachedSuffix: body };
+  const idx = body.indexOf(marker);
+  if (idx === -1) return { cachedPrefix: "", uncachedSuffix: body };
+  const splitPoint = idx + marker.length;
+  return {
+    cachedPrefix: body.slice(0, splitPoint),
+    uncachedSuffix: body.slice(splitPoint),
+  };
+}
+
+// ── Claude cache_control adapter ───────────────────────────────
+
+/**
+ * Format a BuiltPrompt as Anthropic messages with ephemeral cache_control
+ * on the stable prefix. The first call after a ~5 min gap pays full token
+ * cost; subsequent calls with the same prefix are ~10x cheaper.
+ */
+export function toAnthropicMessages(prompt: BuiltPrompt): Array<{
+  role: "user";
+  content: Array<{
+    type: "text";
+    text: string;
+    cache_control?: { type: "ephemeral" };
+  }>;
+}> {
+  if (!prompt.cachedPrefix) {
+    return [
+      {
+        role: "user",
+        content: [{ type: "text", text: prompt.body }],
+      },
+    ];
+  }
+  return [
+    {
+      role: "user",
+      content: [
+        {
+          type: "text",
+          text: prompt.cachedPrefix,
+          cache_control: { type: "ephemeral" },
+        },
+        {
+          type: "text",
+          text: prompt.uncachedSuffix,
+        },
+      ],
+    },
+  ];
+}

@@ -178,6 +178,25 @@ export const translations = {
     "history.toggle": "Geçmişi göster/gizle",
     "history.staleHint": "Sonuçlar güncel değil. Yenilemek için Yeniden Ara'ya dokunun.",
 
+    // ── Source Viewer ──────────────────────────
+    "viewer.title": "Kaynak Görüntüleyici",
+    "viewer.backToSearch": "Aramaya dön",
+    "viewer.downloadOriginal": "Orijinali indir",
+    "viewer.openInNewTab": "Yeni sekmede aç",
+    "viewer.highlightedPassage": "Vurgulanan pasaj",
+    "viewer.jumpToChunk": "Pasaja git",
+    "viewer.notFound": "Kaynak bulunamadı",
+    "viewer.notFoundDesc": "Bu kaynağın orijinal dosyası yüklenememiş veya silinmiş olabilir.",
+    "viewer.unsupported": "Bu dosya türü desteklenmiyor",
+    "viewer.demoNotice": "Demo modu — bu kaynak henüz yüklenmemiştir. Gerçek dağıtımda Cloudflare R2'den yüklenir.",
+    "viewer.loading": "Kaynak yükleniyor...",
+    "viewer.page": "Sayfa",
+    "viewer.of": "/",
+    "viewer.timestamp": "Zaman damgası",
+    "viewer.playFromHere": "Buradan oynat",
+    "viewer.copyLink": "Bağlantıyı kopyala",
+    "viewer.linkCopied": "Bağlantı kopyalandı!",
+
     // ── Upgrade Popup ──────────────────────────
     "upgrade.anonClaude.title": "Claude için hesap gerekli",
     "upgrade.anonClaude.desc": "Claude (Hassas mod) yalnızca kayıtlı kullanıcılar içindir. Ücretsiz hesap oluşturarak hemen kullanmaya başlayın.",
@@ -196,6 +215,44 @@ export const translations = {
     "upgrade.benefits.history": "Sohbet geçmişi kaydetme",
     "upgrade.benefits.byok": "Kendi API anahtarlarınızı kullanma",
     "upgrade.benefits.feedback": "Özelleştirilmiş öneriler",
+
+    // ── Anonymous banner ───────────────────────
+    "banner.anonymous": "Sohbetlerinizi ve geçmişinizi kaydetmek, günlük limitleri yükseltmek için giriş yapın.",
+    "banner.dismiss": "Kapat",
+
+    // ── BYOK toasts ────────────────────────────
+    "byok.toast.geminiSaved": "Gemini anahtarı kaydedildi",
+    "byok.toast.claudeSaved": "Claude anahtarı kaydedildi",
+    "byok.toast.geminiRemoved": "Gemini anahtarı kaldırıldı",
+    "byok.toast.claudeRemoved": "Claude anahtarı kaldırıldı",
+    "byok.toast.demoMode": "Demo modu — anahtarlar kaydedilmez",
+    "byok.toast.saveError": "Anahtar kaydedilemedi",
+    "byok.toast.toggleError": "BYOK durumu değiştirilemedi",
+
+    // ── Share button ───────────────────────────
+    "chat.share": "Paylaş",
+    "chat.share.copy": "Bağlantıyı kopyala",
+    "chat.share.copied": "Paylaşım bağlantısı kopyalandı",
+    "chat.share.revoke": "Paylaşımı iptal et",
+    "chat.share.revoked": "Paylaşım iptal edildi",
+    "chat.share.error": "Paylaşım bağlantısı oluşturulamadı",
+    "chat.export": "Dışa aktar",
+    "chat.export.title": "Sohbeti Markdown olarak indir",
+
+    // ── Public shared conversation page ────────
+    "share.label": "Paylaşılan sohbet",
+    "share.byAuthor": "yazan",
+    "share.empty": "Bu sohbet boş.",
+    "share.snapshot": "Bu salt-okunur bir kopyadır.",
+    "share.startOwn": "Kendi sohbetinizi başlatın",
+    "share.notFound.title": "Bu paylaşılan sohbet kullanılamıyor",
+    "share.notFound.subtitle": "Bağlantı iptal edilmiş olabilir veya kod hatalı.",
+    "share.invalid": "Geçersiz paylaşım bağlantısı",
+    "share.requiresBackend": "Paylaşım için canlı arka uç gerekiyor",
+    "share.loading": "Sohbet yükleniyor…",
+    "share.tryYourself": "Kendin dene →",
+    "share.back": "← HizmetSearch'e dön",
+    "share.sources": "kaynak",
   },
 
   en: {
@@ -370,6 +427,25 @@ export const translations = {
     "history.toggle": "Toggle history",
     "history.staleHint": "Results may be outdated. Click Rerun to refresh.",
 
+    // ── Source Viewer ──────────────────────────
+    "viewer.title": "Source Viewer",
+    "viewer.backToSearch": "Back to search",
+    "viewer.downloadOriginal": "Download original",
+    "viewer.openInNewTab": "Open in new tab",
+    "viewer.highlightedPassage": "Highlighted passage",
+    "viewer.jumpToChunk": "Jump to passage",
+    "viewer.notFound": "Source not found",
+    "viewer.notFoundDesc": "The original file for this source may not have been uploaded or was removed.",
+    "viewer.unsupported": "This file type is not supported",
+    "viewer.demoNotice": "Demo mode — this source hasn't been uploaded yet. In production it's served from Cloudflare R2.",
+    "viewer.loading": "Loading source...",
+    "viewer.page": "Page",
+    "viewer.of": "of",
+    "viewer.timestamp": "Timestamp",
+    "viewer.playFromHere": "Play from here",
+    "viewer.copyLink": "Copy link",
+    "viewer.linkCopied": "Link copied!",
+
     // ── Upgrade Popup ──────────────────────────
     "upgrade.anonClaude.title": "Account required for Claude",
     "upgrade.anonClaude.desc": "Claude (Precision mode) is for registered users only. Create a free account to start using it instantly.",
@@ -388,6 +464,44 @@ export const translations = {
     "upgrade.benefits.history": "Save chat history",
     "upgrade.benefits.byok": "Use your own API keys",
     "upgrade.benefits.feedback": "Personalized recommendations",
+
+    // ── Anonymous banner ───────────────────────
+    "banner.anonymous": "Sign in to save your conversations, history, and increase your daily limits.",
+    "banner.dismiss": "Dismiss",
+
+    // ── BYOK toasts ────────────────────────────
+    "byok.toast.geminiSaved": "Gemini key saved",
+    "byok.toast.claudeSaved": "Claude key saved",
+    "byok.toast.geminiRemoved": "Gemini key removed",
+    "byok.toast.claudeRemoved": "Claude key removed",
+    "byok.toast.demoMode": "Demo mode — keys aren't saved",
+    "byok.toast.saveError": "Could not save key",
+    "byok.toast.toggleError": "Could not toggle BYOK",
+
+    // ── Share button ───────────────────────────
+    "chat.share": "Share",
+    "chat.share.copy": "Copy link",
+    "chat.share.copied": "Share link copied to clipboard",
+    "chat.share.revoke": "Revoke share",
+    "chat.share.revoked": "Share link revoked",
+    "chat.share.error": "Could not generate share link",
+    "chat.export": "Export",
+    "chat.export.title": "Export conversation as Markdown",
+
+    // ── Public shared conversation page ────────
+    "share.label": "Shared conversation",
+    "share.byAuthor": "by",
+    "share.empty": "This conversation is empty.",
+    "share.snapshot": "This is a read-only snapshot.",
+    "share.startOwn": "Start your own conversation",
+    "share.notFound.title": "This shared conversation is not available",
+    "share.notFound.subtitle": "The link may have been revoked or the token is incorrect.",
+    "share.invalid": "Invalid share link",
+    "share.requiresBackend": "Sharing requires the live backend",
+    "share.loading": "Loading conversation…",
+    "share.tryYourself": "Try it yourself →",
+    "share.back": "← Back to HizmetSearch",
+    "share.sources": "sources",
   },
 } as const;
 

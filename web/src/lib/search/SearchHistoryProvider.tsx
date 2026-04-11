@@ -5,11 +5,15 @@ export interface SearchHistoryEntry {
   id: string;
   query: string;
   language: string | null;
-  collection: string | null;
+  category: string | null;
   mode: "results" | "ai";
   resultCount: number;
   cachedResults: SearchResult[];
   cachedAiAnswer?: string;
+  /** AI-expanded query phrasings the search ran. Restored alongside
+   *  results when reopening a history entry so the "AI also searched"
+   *  chip row matches what the user originally saw. */
+  cachedExpansions?: string[];
   createdAt: number;
   // Marks if results are stale (older than X days)
   isStale?: boolean;
@@ -60,23 +64,20 @@ export function SearchHistoryProvider({ children }: { children: ReactNode }) {
   }, [history]);
 
   const add = (entry: Omit<SearchHistoryEntry, "id" | "createdAt">) => {
-    // De-dupe: if same query+lang+collection exists, update + bump to top
-    const key = `${entry.query}::${entry.language ?? ""}::${entry.collection ?? ""}`;
+    // De-dupe: if same query+lang+category exists, update + bump to top
+    const key = `${entry.query}::${entry.language ?? ""}::${entry.category ?? ""}`;
     const existing = history.find(
-      (h) => `${h.query}::${h.language ?? ""}::${h.collection ?? ""}` === key
+      (h) => `${h.query}::${h.language ?? ""}::${h.category ?? ""}` === key
     );
 
     if (existing) {
-      const updated: SearchHistoryEntry = {
-        ...existing,
-        ...entry,
-        createdAt: Date.now(),
-        isStale: false,
-      };
-      setHistory((prev) => [
-        updated,
-        ...prev.filter((h) => h.id !== existing.id),
-      ]);
+      // Update in place — don't reorder, since the user may just be revisiting
+      // an existing entry from the sidebar.
+      setHistory((prev) =>
+        prev.map((h) =>
+          h.id === existing.id ? { ...h, ...entry, isStale: false } : h
+        )
+      );
       return existing.id;
     }
 

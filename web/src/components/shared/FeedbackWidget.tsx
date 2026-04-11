@@ -1,17 +1,49 @@
 import { useState } from "react";
 import { ThumbsUp, ThumbsDown, MessageSquare, Send, X, Check } from "lucide-react";
+import { useMutation } from "convex/react";
+import { api } from "@convex/api";
+import type { Id } from "@convex/dataModel";
 import { cn } from "@/lib/utils";
 import { trackFeedback } from "@/lib/analytics";
 import { useTranslation } from "@/lib/i18n/I18nProvider";
+import { BACKEND_ENABLED } from "@/lib/env";
+import { captureError } from "@/lib/observability";
 
 type Rating = "up" | "down" | null;
 type FeedbackContext = "search_result" | "ai_answer" | "chat_message";
+
+/**
+ * Optional snapshot of the chunk being rated. Captured at click time
+ * and persisted alongside the rating so analysis later doesn't have
+ * to join against the (mutable) Qdrant index.
+ */
+interface ChunkSnapshot {
+  chunk_id: string;
+  doc_id?: string;
+  title?: string;
+  author_speaker?: string;
+  collection?: string;
+  text_excerpt?: string;
+  page_number?: number;
+  score?: number;
+  rerank_score?: number;
+  language?: string;
+}
 
 interface FeedbackWidgetProps {
   targetId: string;
   context: FeedbackContext;
   query?: string;
   model?: string;
+  /** Which AI-expanded phrasing actually retrieved this result. */
+  matchedQuery?: string;
+  /** All AI-expanded phrasings the search ran. */
+  expandedQueries?: string[];
+  /** Frozen chunk metadata for downstream training. */
+  chunkSnapshot?: ChunkSnapshot;
+  /** Filter context the user had set. */
+  filterLanguage?: string;
+  filterCategory?: string;
   /** Compact mode for inline use in result cards */
   compact?: boolean;
   onSubmit?: (rating: "up" | "down", comment?: string) => void;
@@ -22,14 +54,43 @@ export function FeedbackWidget({
   context,
   query,
   model,
+  matchedQuery,
+  expandedQueries,
+  chunkSnapshot,
+  filterLanguage,
+  filterCategory,
   compact = false,
   onSubmit,
 }: FeedbackWidgetProps) {
   const { t } = useTranslation();
+  const submitRating = useMutation(api.mutations.feedback.submitRating);
+  const submitComment = useMutation(api.mutations.feedback.submitComment);
   const [rating, setRating] = useState<Rating>(null);
+  const [feedbackId, setFeedbackId] = useState<Id<"feedback"> | null>(null);
   const [showComment, setShowComment] = useState(false);
   const [comment, setComment] = useState("");
   const [submitted, setSubmitted] = useState(false);
+
+  const persistRating = async (r: "up" | "down") => {
+    if (!BACKEND_ENABLED) return;
+    try {
+      const id = await submitRating({
+        targetType: context,
+        targetId,
+        rating: r,
+        query,
+        model,
+        matchedQuery,
+        expandedQueries,
+        chunkSnapshot,
+        filterLanguage,
+        filterCategory,
+      });
+      setFeedbackId(id as Id<"feedback">);
+    } catch (err) {
+      captureError(err, { where: "feedback.submitRating", context });
+    }
+  };
 
   const handleRate = (newRating: "up" | "down") => {
     const finalRating = rating === newRating ? null : newRating;
@@ -41,6 +102,7 @@ export function FeedbackWidget({
         context,
         targetId
       );
+      void persistRating(finalRating);
       onSubmit?.(finalRating);
 
       // Show comment prompt on thumbs down
@@ -51,12 +113,16 @@ export function FeedbackWidget({
   };
 
   const handleSubmitComment = () => {
-    if (comment.trim() && rating) {
-      onSubmit?.(rating, comment.trim());
-      setSubmitted(true);
-      setShowComment(false);
-      setTimeout(() => setSubmitted(false), 3000);
+    if (!comment.trim() || !rating) return;
+    if (BACKEND_ENABLED && feedbackId) {
+      submitComment({ feedbackId, comment: comment.trim() }).catch((err) =>
+        captureError(err, { where: "feedback.submitComment" })
+      );
     }
+    onSubmit?.(rating, comment.trim());
+    setSubmitted(true);
+    setShowComment(false);
+    setTimeout(() => setSubmitted(false), 3000);
   };
 
   if (compact) {

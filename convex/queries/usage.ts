@@ -1,27 +1,20 @@
 import { query } from "../_generated/server";
-import { v } from "convex/values";
+import { getCurrentUser } from "../users";
 
-/** Get current subscription + usage for a user. */
-export const getUsage = query({
-  args: { userId: v.id("users") },
-  handler: async (ctx, args) => {
-    const sub = await ctx.db
-      .query("subscriptions")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .first();
-
-    const keys = await ctx.db
-      .query("apiKeys")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
-      .first();
-
-    if (!sub) {
+/** Get current subscription + usage for the authenticated user. */
+export const me = query({
+  args: {},
+  handler: async (ctx) => {
+    const user = await getCurrentUser(ctx);
+    if (!user) {
       return {
-        plan: "free" as const,
+        plan: "anonymous" as const,
         claudeTokensUsed: 0,
         geminiTokensUsed: 0,
-        claudeTokensLimit: 20_000,
-        geminiTokensLimit: 100_000,
+        claudeTokensLimit: 0,
+        geminiTokensLimit: 5_000,
+        claudeCreditTokens: 0,
+        geminiCreditTokens: 0,
         claudePercentUsed: 0,
         geminiPercentUsed: 0,
         isExceeded: false,
@@ -31,8 +24,40 @@ export const getUsage = query({
       };
     }
 
-    const hasByokKeys = !!(keys?.geminiKeySet || keys?.claudeKeySet);
+    const sub = await ctx.db
+      .query("subscriptions")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .first();
+
+    const keys = await ctx.db
+      .query("apiKeys")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .first();
+
+    const geminiKeySet = !!keys?.geminiKeySet;
+    const claudeKeySet = !!keys?.claudeKeySet;
+    const hasByokKeys = geminiKeySet || claudeKeySet;
     const byokActive = !!(keys?.isActive && hasByokKeys);
+
+    if (!sub) {
+      return {
+        plan: "free" as const,
+        claudeTokensUsed: 0,
+        geminiTokensUsed: 0,
+        claudeTokensLimit: 20_000,
+        geminiTokensLimit: 100_000,
+        claudeCreditTokens: 0,
+        geminiCreditTokens: 0,
+        claudePercentUsed: 0,
+        geminiPercentUsed: 0,
+        isExceeded: false,
+        resetAt: Date.now() + 30 * 24 * 60 * 60 * 1000,
+        hasByokKeys,
+        byokActive,
+        geminiKeySet,
+        claudeKeySet,
+      };
+    }
 
     const claudePercent =
       sub.claudeTokensLimit > 0
@@ -52,12 +77,16 @@ export const getUsage = query({
       geminiTokensUsed: sub.geminiTokensUsed,
       claudeTokensLimit: sub.claudeTokensLimit,
       geminiTokensLimit: sub.geminiTokensLimit,
+      claudeCreditTokens: sub.claudeCreditTokens ?? 0,
+      geminiCreditTokens: sub.geminiCreditTokens ?? 0,
       claudePercentUsed: Math.round(claudePercent),
       geminiPercentUsed: Math.round(geminiPercent),
       isExceeded: !byokActive && claudeExceeded && geminiExceeded,
       resetAt: sub.resetAt,
       hasByokKeys,
       byokActive,
+      geminiKeySet,
+      claudeKeySet,
       stripeCustomerId: sub.stripeCustomerId,
     };
   },

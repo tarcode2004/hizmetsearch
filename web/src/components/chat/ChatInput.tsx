@@ -44,7 +44,7 @@ export function ChatInput({ onSend, isLoading = false, disabled = false }: ChatI
   return (
     <form onSubmit={handleSubmit} className="border-t border-border bg-card p-4">
       <div className="mx-auto flex max-w-3xl items-end gap-2">
-        <div className="flex-1 rounded-xl border border-input bg-background px-3 py-2 focus-within:border-primary focus-within:ring-2 focus-within:ring-primary/20 transition-all">
+        <div className="flex-1 rounded-xl border border-input bg-background px-3 py-2 focus-within:border-primary/40 focus-within:shadow-sm transition-all">
           <textarea
             ref={textareaRef}
             value={input}
@@ -53,9 +53,13 @@ export function ChatInput({ onSend, isLoading = false, disabled = false }: ChatI
             placeholder={`${t("chat.placeholder")} | اسأل سؤالاً`}
             dir={isArabic ? "rtl" : "ltr"}
             rows={1}
+            wrap="soft"
             disabled={disabled}
             className={cn(
-              "w-full resize-none bg-transparent text-sm outline-none placeholder:text-muted-foreground/60",
+              // `whitespace-pre-wrap break-words` make sure long lines wrap
+              // visually instead of overflowing horizontally; auto-resize
+              // height is handled in handleInput.
+              "w-full resize-none overflow-y-auto bg-transparent pl-1 text-sm outline-none placeholder:text-muted-foreground/60 focus-visible:!shadow-none whitespace-pre-wrap break-words leading-relaxed",
               isArabic && "font-[var(--font-arabic)] text-base text-right"
             )}
           />

@@ -23,7 +23,11 @@ export function SearchBar({ initialQuery = "", large = false, autoFocus = false 
   const { t } = useTranslation();
   const [query, setQuery] = useState(initialQuery);
   const [focused, setFocused] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  // Switched from <input> to <textarea> so long queries wrap onto multiple
+  // lines instead of scrolling horizontally off-screen. We grow the
+  // height with the content (max ~5 lines), preserve Enter-to-submit, and
+  // allow Shift+Enter for explicit line breaks just like a proper editor.
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const navigate = useNavigate();
   const isArabic = detectArabicScript(query);
 
@@ -43,10 +47,28 @@ export function SearchBar({ initialQuery = "", large = false, autoFocus = false 
     return () => document.removeEventListener("keydown", handler);
   }, []);
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
+  // Auto-grow the textarea so it expands as text wraps. Cap height so a
+  // pasted essay doesn't push the page around — it scrolls inside the
+  // textarea once we hit the cap.
+  useEffect(() => {
+    const ta = inputRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = Math.min(ta.scrollHeight, large ? 160 : 120) + "px";
+  }, [query, large]);
+
+  const handleSubmit = (e?: React.FormEvent) => {
+    e?.preventDefault();
     if (query.trim()) {
       navigate(`/search?q=${encodeURIComponent(query.trim())}`);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Enter submits, Shift+Enter inserts a newline.
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      handleSubmit();
     }
   };
 
@@ -55,25 +77,32 @@ export function SearchBar({ initialQuery = "", large = false, autoFocus = false 
       <form onSubmit={handleSubmit}>
         <div
           className={cn(
-            "relative flex items-center rounded-2xl border bg-card shadow-sm transition-all",
-            focused ? "border-primary shadow-md ring-2 ring-primary/20" : "border-border",
+            "relative flex items-start rounded-2xl border bg-card shadow-sm transition-all",
+            focused ? "border-primary/40 shadow-md" : "border-border",
             large ? "px-5 py-4" : "px-4 py-2.5"
           )}
         >
-          <Search className={cn("shrink-0 text-muted-foreground", large ? "h-6 w-6" : "h-5 w-5")} />
-          <input
+          <Search
+            className={cn(
+              "mt-0.5 shrink-0 text-muted-foreground",
+              large ? "h-6 w-6" : "h-5 w-5",
+            )}
+          />
+          <textarea
             ref={inputRef}
-            type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={handleKeyDown}
             onFocus={() => setFocused(true)}
             onBlur={() => setTimeout(() => setFocused(false), 200)}
             placeholder={`${t("search.placeholder")} | ابحث في المصادر الإسلامية`}
             autoFocus={autoFocus}
             dir={isArabic ? "rtl" : "ltr"}
+            rows={1}
+            wrap="soft"
             className={cn(
-              "flex-1 bg-transparent outline-none placeholder:text-muted-foreground/60",
-              large ? "mx-4 text-lg" : "mx-3 text-sm",
+              "flex-1 resize-none overflow-y-auto bg-transparent outline-none placeholder:text-muted-foreground/60 focus-visible:!shadow-none whitespace-pre-wrap break-words leading-relaxed",
+              large ? "mx-4 pl-1 text-lg" : "mx-3 pl-0.5 text-sm",
               isArabic && "font-[var(--font-arabic)] text-right"
             )}
           />

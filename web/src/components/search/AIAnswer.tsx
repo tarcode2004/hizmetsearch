@@ -1,123 +1,517 @@
-import { useState } from "react";
+import React, { useState } from "react";
 import ReactMarkdown from "react-markdown";
-import { Sparkles, ChevronDown, ChevronUp, BookOpen } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { motion } from "framer-motion";
+import { useNavigate } from "react-router-dom";
+import { useMutation } from "convex/react";
+import { toast } from "sonner";
+import {
+  Sparkles,
+  ChevronDown,
+  ChevronUp,
+  BookOpen,
+  ExternalLink,
+  ArrowUpRight,
+  MessageSquarePlus,
+} from "lucide-react";
+import { api } from "@convex/api";
+import { cn, detectArabicScript, truncate } from "@/lib/utils";
 import { FeedbackWidget } from "@/components/shared/FeedbackWidget";
-import type { SearchResult } from "@/lib/types";
+import { CitationChip } from "@/components/ornaments/CitationChip";
+import type { AIModel, ChunkResult, SearchResult } from "@/lib/types";
 import { useTranslation } from "@/lib/i18n/I18nProvider";
+import { useAuth } from "@/lib/auth/AuthProvider";
+import { buildSourceViewerUrl } from "@/lib/source-viewer";
+import { captureError } from "@/lib/observability";
+import { fade, spring } from "@/lib/motion";
+
+/**
+ * Hover tooltip content for an AI Answer citation chip — same shape
+ * as the chat-message version (title, optional author/page/timestamp,
+ * truncated chunk text, RTL-aware). Lifted into its own component so
+ * the chip itself stays small and the tooltip can be styled freely.
+ */
+function CitationTooltipContent({ source }: { source: ChunkResult }) {
+  const isArabic = detectArabicScript(source.text);
+  const meta: string[] = [];
+  if (source.author_speaker) meta.push(source.author_speaker);
+  if (source.page_number != null) meta.push(`p. ${source.page_number}`);
+  else if (source.timestamp_start != null) {
+    const m = Math.floor(source.timestamp_start / 60);
+    const s = Math.floor(source.timestamp_start % 60).toString().padStart(2, "0");
+    meta.push(`${m}:${s}`);
+  }
+  return (
+    <div className="w-[300px] p-3">
+      <p
+        className="text-[13px] font-semibold text-foreground leading-tight"
+        style={{ fontFamily: "var(--font-display)" }}
+      >
+        {source.title}
+      </p>
+      {meta.length > 0 && (
+        <p className="mt-0.5 text-[10px] text-muted-foreground">
+          {meta.join(" · ")}
+        </p>
+      )}
+      <p
+        dir={isArabic ? "rtl" : "ltr"}
+        className={cn(
+          "mt-2 text-[11px] leading-snug text-foreground/75 line-clamp-4",
+          isArabic && "font-[var(--font-arabic)] text-[13px]",
+        )}
+      >
+        {truncate(source.text, 220)}
+      </p>
+    </div>
+  );
+}
 
 interface AIAnswerProps {
   answer: string;
   sources: SearchResult[];
   isStreaming?: boolean;
+  /** The original search query that produced this answer. Used by the
+   *  "Keep chatting" button to seed a new chat conversation as the
+   *  first user turn. */
+  query?: string;
+  /** Which model family the AI Answer was synthesized with. Carried
+   *  onto the seeded chat conversation so the chat continues with the
+   *  same model by default. Defaults to "gemini" — the search action
+   *  always uses Gemini for the AI Answer pass. */
+  model?: AIModel;
 }
 
-export function AIAnswer({ answer, sources, isStreaming = false }: AIAnswerProps) {
-  const { t } = useTranslation();
-  const [sourcesExpanded, setSourcesExpanded] = useState(false);
+// A handful of common related-topic follow-ups — stubbed client-side
+// until the backend generates real follow-ups.
+const FOLLOWUP_SUGGESTIONS = [
+  "Related theme across Risale-i Nur",
+  "How does Bediüzzaman frame this?",
+  "What do other scholars say?",
+];
 
-  const renderContent = (text: string) => {
-    // Replace [N] citation markers with styled spans
-    const parts = text.split(/(\[\d+\])/g);
-    return parts.map((part, i) => {
-      const match = part.match(/^\[(\d+)\]$/);
-      if (match) {
-        const num = parseInt(match[1]);
-        return (
-          <button
-            key={i}
-            onClick={() => {
-              document.getElementById(`result-${num - 1}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
-            }}
-            className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-primary/15 text-[10px] font-bold text-primary hover:bg-primary/25 transition-colors mx-0.5 align-super"
-            title={sources[num - 1]?.chunk.title}
-          >
-            {num}
-          </button>
-        );
+// Placeholder we substitute for citations BEFORE handing the text to
+// ReactMarkdown. CommonMark interprets `[5]` as a shortcut reference link
+// and either strips the brackets or eats the markup entirely when no
+// matching link definition exists, so by the time our React component
+// sees the children the `[N]` markers are already mangled. We use
+// private-use Unicode characters that the markdown parser passes through
+// verbatim, then swap them back into chips after parsing.
+//
+// Recognized citation shapes:
+//   [1]            single
+//   [1][2]         adjacent (handled by chained matches)
+//   [1, 2, 3]      comma list — expanded into 3 separate chips
+//   [1-3]          range — expanded into 1, 2, 3
+//   [Source 1]     prose form — caught and normalized to [1]
+const CITE_OPEN = "\uE000";
+const CITE_CLOSE = "\uE001";
+const CITE_PLACEHOLDER_RE = new RegExp(
+  `${CITE_OPEN}(\\d+)${CITE_CLOSE}`,
+  "g",
+);
+
+function expandRangeOrList(inner: string): number[] {
+  const out: number[] = [];
+  for (const part of inner.split(/\s*,\s*/)) {
+    const range = part.match(/^(\d+)\s*[-–—]\s*(\d+)$/);
+    if (range) {
+      const a = Number(range[1]);
+      const b = Number(range[2]);
+      if (a <= b && b - a < 20) {
+        for (let i = a; i <= b; i++) out.push(i);
+        continue;
       }
-      return <span key={i}>{part}</span>;
+    }
+    const single = part.match(/^\d+$/);
+    if (single) out.push(Number(single[0]));
+  }
+  return out;
+}
+
+function preprocessCitations(text: string): string {
+  return text.replace(
+    /\[\s*(?:source|src|kaynak)?\s*:?\s*([\d,\s\-–—]+)\s*\]/gi,
+    (_match, inner) => {
+      const nums = expandRangeOrList(inner);
+      if (nums.length === 0) return _match;
+      return nums.map((n) => `${CITE_OPEN}${n}${CITE_CLOSE}`).join("");
+    },
+  );
+}
+
+export function AIAnswer({
+  answer,
+  sources,
+  isStreaming = false,
+  query,
+  model = "gemini",
+}: AIAnswerProps) {
+  const { t } = useTranslation();
+  const navigate = useNavigate();
+  const { user } = useAuth();
+  const createConversationFromSearch = useMutation(
+    api.mutations.conversations.createFromSearch,
+  );
+  const [sourcesExpanded, setSourcesExpanded] = useState(false);
+  const [isCreatingConversation, setIsCreatingConversation] = useState(false);
+
+  const handleKeepChatting = async () => {
+    if (!query || !answer || isCreatingConversation) return;
+    setIsCreatingConversation(true);
+    try {
+      // Strip the SearchResult shape down to what the messages.sources
+      // schema accepts. The frontend ChunkResult has extra fields
+      // (source_url, source_ext, char_offset, highlighted_text,
+      // matched_query) that the schema validator would reject. Also
+      // collapse `null` to `undefined` on optional fields.
+      const trimmedSources = sources.map((s) => ({
+        chunk_id: s.chunk.chunk_id,
+        doc_id: s.chunk.doc_id,
+        text: s.chunk.text,
+        parent_text: s.chunk.parent_text ?? undefined,
+        source_type: s.chunk.source_type,
+        language: s.chunk.language,
+        collection: s.chunk.collection,
+        title: s.chunk.title,
+        author_speaker: s.chunk.author_speaker,
+        publisher: s.chunk.publisher,
+        chapter_section: s.chunk.chapter_section,
+        page_number: s.chunk.page_number ?? undefined,
+        timestamp_start: s.chunk.timestamp_start ?? undefined,
+        timestamp_end: s.chunk.timestamp_end ?? undefined,
+        score: s.score ?? undefined,
+      }));
+      const conversationId = await createConversationFromSearch({
+        query,
+        aiAnswer: answer,
+        sources: trimmedSources,
+        model,
+      });
+      navigate(`/chat/${conversationId}`);
+    } catch (err) {
+      console.error("createFromSearch failed", err);
+      captureError(err, { where: "AIAnswer.keepChatting", query });
+      toast.error(
+        err instanceof Error ? err.message : "Couldn't open chat. Try again.",
+      );
+      setIsCreatingConversation(false);
+    }
+  };
+
+  // Build a chip for one citation number.
+  const makeChip = (num: number, key: string) => {
+    const source = sources[num - 1];
+    const href = source ? buildSourceViewerUrl(source.chunk) : "#";
+    return (
+      <CitationChip
+        key={key}
+        number={num}
+        href={href}
+        tooltip={source ? <CitationTooltipContent source={source.chunk} /> : undefined}
+        target="_blank"
+        rel="noopener"
+        onClick={(e) => {
+          if (e.shiftKey) {
+            e.preventDefault();
+            document
+              .getElementById(`result-${num - 1}`)
+              ?.scrollIntoView({ behavior: "smooth", block: "center" });
+          }
+        }}
+      />
+    );
+  };
+
+  // Walk a piece of text and replace each placeholder with a chip.
+  const renderText = (text: string, baseKey: string): React.ReactNode[] => {
+    // Splitting with a capture group puts captured groups at odd indices.
+    const parts = text.split(CITE_PLACEHOLDER_RE);
+    return parts.map((part, i) => {
+      if (i % 2 === 1) {
+        return makeChip(parseInt(part, 10), `${baseKey}-c${i}`);
+      }
+      return part ? <span key={`${baseKey}-t${i}`}>{part}</span> : null;
     });
   };
 
+  // Recursively walk a React children tree and run renderText on every
+  // string node. Earlier the code only handled the case where children was
+  // a single string and silently fell through for paragraphs that contained
+  // any inline markup (em, strong, etc.) — those paragraphs lost their
+  // citation chips entirely.
+  const renderChildren = (
+    children: React.ReactNode,
+    baseKey: string,
+  ): React.ReactNode => {
+    if (typeof children === "string") {
+      return renderText(children, baseKey);
+    }
+    if (Array.isArray(children)) {
+      return children.map((c, i) => renderChildren(c, `${baseKey}-${i}`));
+    }
+    if (React.isValidElement(children)) {
+      const el = children as React.ReactElement<{ children?: React.ReactNode }>;
+      return React.cloneElement(el, {
+        children: renderChildren(el.props.children, `${baseKey}-x`),
+      });
+    }
+    return children;
+  };
+
   return (
-    <div className="rounded-2xl border border-primary/20 bg-gradient-to-b from-primary/5 to-transparent p-6">
+    <motion.div
+      initial={{ opacity: 0, y: 8 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={spring.soft}
+      className="relative overflow-hidden rounded-2xl border border-primary/20 bg-gradient-to-b from-primary/5 via-background to-background p-6 sm:p-8 shadow-[var(--shadow-sm)]"
+    >
+      {/* Decorative corner ornament */}
+      <div className="pointer-events-none absolute -right-8 -top-8 h-32 w-32 rounded-full bg-primary/5 blur-2xl" />
+
       {/* Header */}
-      <div className="mb-4 flex items-center gap-2">
-        <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary/15">
+      <div className="relative mb-5 flex items-center gap-2.5">
+        <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-primary/10 shadow-[inset_0_0_0_1px_var(--color-primary-soft)]">
           <Sparkles className="h-4 w-4 text-primary" />
         </div>
-        <span className="text-sm font-semibold text-primary">{t("search.aiAnswerTitle")}</span>
+        <span
+          className="text-sm font-semibold text-primary"
+          style={{
+            fontFamily: "var(--font-display)",
+            fontStyle: "italic",
+            letterSpacing: "0.01em",
+          }}
+        >
+          {t("search.aiAnswerTitle")}
+        </span>
         {isStreaming && (
-          <span className="text-xs text-muted-foreground animate-pulse">Yanıt oluşturuluyor...</span>
+          <span className="text-xs text-muted-foreground animate-pulse">
+            Generating…
+          </span>
         )}
       </div>
 
       {/* Answer content */}
-      <div className={cn("prose prose-sm max-w-none text-foreground/90 leading-relaxed", isStreaming && "streaming-cursor")}>
+      <div
+        className={cn(
+          "relative max-w-none leading-relaxed text-foreground/90",
+          isStreaming && "streaming-cursor"
+        )}
+        style={{
+          fontSize: "1.0625rem",
+          lineHeight: 1.65,
+        }}
+      >
         <ReactMarkdown
           components={{
-            p: ({ children }) => (
-              <p className="mb-3 last:mb-0">
-                {typeof children === "string" ? renderContent(children) : children}
-              </p>
-            ),
+            p: ({ children, node }) => {
+              // Drop cap the first paragraph only
+              const isFirst =
+                node && node.position?.start?.line === 1;
+              return (
+                <p className={cn("mb-4 last:mb-0", isFirst && "drop-cap")}>
+                  {renderChildren(children, "p")}
+                </p>
+              );
+            },
             strong: ({ children }) => (
-              <strong className="font-semibold text-foreground">{children}</strong>
+              <strong className="font-semibold text-foreground">
+                {renderChildren(children, "s")}
+              </strong>
+            ),
+            em: ({ children }) => (
+              <em style={{ fontFamily: "var(--font-display)", fontStyle: "italic" }}>
+                {renderChildren(children, "e")}
+              </em>
+            ),
+            // Lists — the AI Answer often enumerates findings ("vasıflar")
+            // as a bulleted or numbered list. Without an explicit `li`
+            // handler ReactMarkdown renders the default <li> and the
+            // citation placeholders inside it never get swapped for chips,
+            // leaving raw private-use Unicode that renders as NOGLYPH tofu.
+            ul: ({ children }) => (
+              <ul className="mb-4 ml-5 list-disc space-y-1 last:mb-0 marker:text-muted-foreground/60">
+                {children}
+              </ul>
+            ),
+            ol: ({ children }) => (
+              <ol className="mb-4 ml-5 list-decimal space-y-1 last:mb-0 marker:text-muted-foreground/60">
+                {children}
+              </ol>
+            ),
+            li: ({ children }) => (
+              <li className="leading-relaxed">{renderChildren(children, "li")}</li>
+            ),
+            h1: ({ children }) => (
+              <h1
+                className="mt-4 mb-2 text-xl font-semibold text-foreground first:mt-0"
+                style={{ fontFamily: "var(--font-display)" }}
+              >
+                {renderChildren(children, "h1")}
+              </h1>
+            ),
+            h2: ({ children }) => (
+              <h2
+                className="mt-4 mb-2 text-lg font-semibold text-foreground first:mt-0"
+                style={{ fontFamily: "var(--font-display)" }}
+              >
+                {renderChildren(children, "h2")}
+              </h2>
+            ),
+            h3: ({ children }) => (
+              <h3
+                className="mt-3 mb-1.5 text-base font-semibold text-foreground first:mt-0"
+                style={{ fontFamily: "var(--font-display)" }}
+              >
+                {renderChildren(children, "h3")}
+              </h3>
+            ),
+            blockquote: ({ children }) => (
+              <blockquote className="mb-4 border-l-2 border-primary/40 pl-3 italic text-foreground/75 last:mb-0">
+                {renderChildren(children, "bq")}
+              </blockquote>
+            ),
+            a: ({ children, href }) => (
+              <a
+                href={href}
+                target="_blank"
+                rel="noopener"
+                className="text-primary underline decoration-primary/40 underline-offset-2 hover:decoration-primary"
+              >
+                {renderChildren(children, "a")}
+              </a>
+            ),
+            code: ({ children }) => (
+              <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.85em] text-foreground">
+                {renderChildren(children, "code")}
+              </code>
             ),
           }}
         >
-          {answer}
+          {preprocessCitations(answer)}
         </ReactMarkdown>
       </div>
 
-      {/* Feedback */}
+      {/* Feedback + follow-ups row */}
       {!isStreaming && (
-        <div className="mt-4 border-t border-border/30 pt-3">
-          <FeedbackWidget
-            targetId={`ai-answer-${sources[0]?.chunk.chunk_id ?? "none"}`}
-            context="ai_answer"
-          />
-        </div>
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ ...fade.smooth, delay: 0.2 }}
+          className="relative mt-6 border-t border-border/50 pt-4"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <FeedbackWidget
+              targetId={`ai-answer-${sources[0]?.chunk.chunk_id ?? "none"}`}
+              context="ai_answer"
+            />
+            {/*
+              "Keep chatting" — opens a new chat conversation seeded
+              with the original query and this AI answer (with the
+              same sources attached). Only shown to authenticated
+              users since chat history requires an account.
+            */}
+            {user.isAuthenticated && query && answer && (
+              <button
+                type="button"
+                onClick={handleKeepChatting}
+                disabled={isCreatingConversation}
+                className={cn(
+                  "group inline-flex items-center gap-2 rounded-full",
+                  "border border-primary/30 bg-primary/10 px-4 py-2 text-sm font-medium",
+                  "text-primary shadow-[inset_0_0_0_1px_var(--color-primary-soft)]",
+                  "transition-all hover:bg-primary/15 hover:border-primary/50",
+                  "disabled:opacity-60 disabled:cursor-not-allowed",
+                )}
+              >
+                <MessageSquarePlus className="h-4 w-4" />
+                {/* TODO: thread these strings through I18nProvider once
+                    the keepChatting/keepChattingLoading keys are added
+                    to web/src/lib/i18n/translations.ts */}
+                {isCreatingConversation ? "Opening chat…" : "Keep chatting"}
+                <ArrowUpRight className="h-3.5 w-3.5 opacity-60 transition-opacity group-hover:opacity-100" />
+              </button>
+            )}
+          </div>
+
+          {/* Suggested follow-ups */}
+          <div className="mt-4">
+            <div
+              className="mb-2 text-[10px] uppercase tracking-wider text-muted-foreground/70"
+              style={{ fontFamily: "var(--font-display)", fontStyle: "italic" }}
+            >
+              Suggested follow-ups
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {FOLLOWUP_SUGGESTIONS.map((q) => (
+                <button
+                  key={q}
+                  className="group flex items-center gap-1 rounded-full border border-border bg-card/50 px-3 py-1.5 text-xs text-muted-foreground hover:bg-card hover:border-primary/30 hover:text-foreground transition-all"
+                >
+                  {q}
+                  <ArrowUpRight className="h-3 w-3 opacity-40 transition-opacity group-hover:opacity-100" />
+                </button>
+              ))}
+            </div>
+          </div>
+        </motion.div>
       )}
 
       {/* Sources section */}
-      {sources.length > 0 && (
-        <div className="mt-5 border-t border-border/50 pt-4">
+      {sources.length > 0 && !isStreaming && (
+        <div className="relative mt-5 border-t border-border/50 pt-4">
           <button
             onClick={() => setSourcesExpanded(!sourcesExpanded)}
             className="flex items-center gap-2 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
           >
             <BookOpen className="h-3.5 w-3.5" />
             {sources.length} {t("search.sourcesUsed")}
-            {sourcesExpanded ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+            {sourcesExpanded ? (
+              <ChevronUp className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronDown className="h-3.5 w-3.5" />
+            )}
           </button>
 
           {sourcesExpanded && (
-            <div className="mt-3 grid gap-2">
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: "auto" }}
+              transition={spring.gentle}
+              className="mt-3 grid gap-2 overflow-hidden"
+            >
               {sources.map((s, i) => (
-                <div
+                <a
                   key={s.chunk.chunk_id}
-                  className="flex items-start gap-2 rounded-lg bg-card/80 p-2.5 text-xs"
+                  href={buildSourceViewerUrl(s.chunk)}
+                  target="_blank"
+                  rel="noopener"
+                  className="group flex items-start gap-2.5 rounded-lg border border-border/50 bg-card/80 p-3 text-xs no-underline hover:bg-card hover:border-primary/30 hover:shadow-[var(--shadow-sm)] transition-all"
                 >
-                  <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/10 text-[10px] font-bold text-primary">
-                    {i + 1}
-                  </span>
-                  <div className="min-w-0">
-                    <span className="font-medium text-foreground">{s.chunk.title}</span>
+                  <CitationChip number={i + 1} className="pointer-events-none" />
+                  <div className="min-w-0 flex-1">
+                    <div
+                      className="font-semibold text-foreground group-hover:text-primary"
+                      style={{ fontFamily: "var(--font-display)" }}
+                    >
+                      {s.chunk.title}
+                    </div>
                     {s.chunk.author_speaker && (
-                      <span className="text-muted-foreground"> — {s.chunk.author_speaker}</span>
+                      <div className="text-muted-foreground text-[11px]">
+                        {s.chunk.author_speaker}
+                        {s.chunk.page_number != null && ` · p. ${s.chunk.page_number}`}
+                      </div>
                     )}
-                    {s.chunk.page_number != null && (
-                      <span className="text-muted-foreground"> (s. {s.chunk.page_number})</span>
-                    )}
+                    <p className="mt-1 text-muted-foreground/80 text-[11px] leading-relaxed">
+                      {truncate(s.chunk.text, 140)}
+                    </p>
                   </div>
-                </div>
+                  <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground/40 opacity-0 group-hover:opacity-100 transition-opacity" />
+                </a>
               ))}
-            </div>
+            </motion.div>
           )}
         </div>
       )}
-    </div>
+    </motion.div>
   );
 }

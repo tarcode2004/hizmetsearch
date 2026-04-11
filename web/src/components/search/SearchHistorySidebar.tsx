@@ -6,12 +6,17 @@ import {
   Sparkles,
   AlertCircle,
 } from "lucide-react";
+import { useMemo } from "react";
+import { useQuery, useMutation } from "convex/react";
+import { api } from "@convex/api";
 import { cn, detectArabicScript, truncate } from "@/lib/utils";
 import { useTranslation } from "@/lib/i18n/I18nProvider";
 import {
   useSearchHistory,
   type SearchHistoryEntry,
 } from "@/lib/search/SearchHistoryProvider";
+import { BACKEND_ENABLED } from "@/lib/env";
+import { useAuth } from "@/lib/auth/AuthProvider";
 
 interface SearchHistorySidebarProps {
   activeId?: string;
@@ -25,7 +30,67 @@ export function SearchHistorySidebar({
   onRerun,
 }: SearchHistorySidebarProps) {
   const { t, locale } = useTranslation();
-  const { history, remove, clear } = useSearchHistory();
+  const { user } = useAuth();
+  const local = useSearchHistory();
+  const liveOn = BACKEND_ENABLED && user.isAuthenticated;
+  // Live history rows from Convex (only when authenticated). The local
+  // provider is still used as a fallback (anonymous + demo mode) and to
+  // hold cached result snapshots that the server query doesn't store.
+  const liveRows = useQuery(
+    api.queries.searchHistory.list,
+    liveOn ? {} : "skip"
+  );
+  const removeLiveRow = useMutation(api.mutations.searchHistory.remove);
+  const clearLive = useMutation(api.mutations.searchHistory.clear);
+
+  // Adapt the live rows into the local SearchHistoryEntry shape so
+  // the existing render path works unchanged. We pull `cachedResultsJson`
+  // out of each row and parse it into the SearchResult[] shape the
+  // entry expects, so clicking a history row can restore results
+  // instantly without re-running the search.
+  const history: SearchHistoryEntry[] = useMemo(() => {
+    if (liveOn && liveRows) {
+      return liveRows.map((row: any) => {
+        let cachedResults: SearchHistoryEntry["cachedResults"] = [];
+        if (typeof row.cachedResultsJson === "string") {
+          try {
+            const parsed = JSON.parse(row.cachedResultsJson);
+            if (Array.isArray(parsed)) cachedResults = parsed;
+          } catch {
+            /* ignore — fall through to empty cache */
+          }
+        }
+        return {
+          id: row._id,
+          query: row.query,
+          language: null,
+          category: null,
+          mode: row.mode === "ai_answer" ? "ai" : "results",
+          resultCount: row.resultCount,
+          cachedResults,
+          cachedAiAnswer: row.cachedAiAnswer ?? undefined,
+          cachedExpansions: row.cachedExpansions ?? undefined,
+          createdAt: row.createdAt,
+        };
+      });
+    }
+    return local.history;
+  }, [liveOn, liveRows, local.history]);
+
+  const remove = (id: string) => {
+    if (liveOn) {
+      void removeLiveRow({ id: id as any });
+    } else {
+      local.remove(id);
+    }
+  };
+  const clear = () => {
+    if (liveOn) {
+      void clearLive({});
+    } else {
+      local.clear();
+    }
+  };
 
   const formatRelative = (createdAt: number): string => {
     const diffMs = Date.now() - createdAt;

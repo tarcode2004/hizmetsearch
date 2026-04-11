@@ -7,7 +7,7 @@
     <meta name="description" content="HizmetSearch - İslami ilim kaynaklarında semantik arama ve yapay zeka destekli keşif" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Amiri:wght@400;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Amiri:wght@400;700&display=swap" rel="stylesheet" />
     <title>HizmetSearch — Semantic Search for Islamic Scholarship</title>
     <!-- Google Analytics 4 -->
     <script async src="https://www.googletagmanager.com/gtag/js?id=G-XXXXXXXXXX"></script>
@@ -20,6 +20,33 @@
   </head>
   <body>
     <div id="root"></div>
+
+    <!--
+      Static form declarations for Netlify Forms.
+
+      Netlify scans the BUILT static HTML for `<form netlify>` tags at
+      deploy time and registers each form's name + field set on its
+      side. Since we're a React SPA, the actual form is rendered by JS
+      at runtime and is invisible to that scanner — so we declare a
+      hidden copy of every form here. The runtime React form just
+      POSTs to "/" with `form-name=<name>` and the matching field set.
+
+      Keep field names in sync with src/components/feedback/.
+    -->
+    <form name="feedback" data-netlify="true" hidden>
+      <input type="text" name="name" />
+      <input type="email" name="email" />
+      <input type="text" name="topic" />
+      <textarea name="message"></textarea>
+      <input type="text" name="page" />
+      <input type="text" name="user_id" />
+    </form>
+    <form name="contact" data-netlify="true" hidden>
+      <input type="text" name="name" />
+      <input type="email" name="email" />
+      <textarea name="message"></textarea>
+    </form>
+
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
