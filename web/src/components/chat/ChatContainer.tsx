@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { toast } from "sonner";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
@@ -54,6 +55,7 @@ export function ChatContainer({ routeConversationId }: ChatContainerProps = {}) 
   const { t } = useTranslation();
   const { user } = useAuth();
   const { show: showUpgrade } = useUpgradePopup();
+  const navigate = useNavigate();
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [model, setModel] = useState<AIModel>("gemini");
@@ -348,6 +350,10 @@ export function ChatContainer({ routeConversationId }: ChatContainerProps = {}) 
   };
 
   const handleNewChat = () => {
+    // Drop the :conversationId from the URL first — otherwise the
+    // routeConversationId effect immediately snaps activeConv back to
+    // the current chat and the click looks like a no-op.
+    if (routeConversationId) navigate("/chat");
     setActiveConv({ id: `c-${Date.now()}`, isLive: false });
     setMockMessages([]);
   };
