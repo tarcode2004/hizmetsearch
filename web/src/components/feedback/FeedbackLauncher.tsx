@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useLocation } from "react-router-dom";
 import { MessageSquarePlus, X } from "lucide-react";
 import { FeedbackForm } from "./FeedbackForm";
 import { cn } from "@/lib/utils";
@@ -14,6 +15,7 @@ import { cn } from "@/lib/utils";
  */
 export function FeedbackLauncher() {
   const [open, setOpen] = useState(false);
+  const { pathname } = useLocation();
 
   useEffect(() => {
     if (!open) return;
@@ -24,9 +26,11 @@ export function FeedbackLauncher() {
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
 
-  // Don't render on the standalone source viewer — that route is
-  // opened in a new tab and the corner button just adds noise.
-  if (typeof window !== "undefined" && window.location.pathname.startsWith("/source/")) {
+  // Don't render on routes where the fixed button overlaps other
+  // controls: the source viewer (new-tab route with its own header)
+  // and the chat page (the send-message button sits in the same
+  // bottom-right corner on mobile).
+  if (pathname.startsWith("/source/") || pathname.startsWith("/chat")) {
     return null;
   }
 
