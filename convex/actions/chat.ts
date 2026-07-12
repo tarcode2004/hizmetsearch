@@ -49,6 +49,7 @@ import {
 import { budgetRefusal } from "../lib/budgetGate";
 import { resolveModelId } from "../lib/modelCatalog";
 import { captureGeneration } from "../lib/llmAnalytics";
+import { EvidenceLedger } from "../lib/evidence";
 
 const MAX_HISTORY = 10;
 // Conservative output cap for plain chat. Chat replies almost never need
@@ -592,6 +593,7 @@ async function runResearchAgent(opts: {
 
   // ── Conversation state ──
   const registry: DocRegistry = new Map();
+  const evidence = new EvidenceLedger(String(assistantMsgId));
   const steps: ResearchStep[] = [];
   const usage: ResearchUsage = {
     inputTokens: 0,
@@ -788,7 +790,8 @@ async function runResearchAgent(opts: {
           ragKey,
           tu.name,
           input,
-          registry
+          registry,
+          evidence,
         );
         return { tu, input, exec, elapsedMs: Date.now() - t0 };
       })

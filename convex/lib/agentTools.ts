@@ -16,6 +16,7 @@
  *     ~half the works have arbitrary passage order).
  */
 import type Anthropic from "@anthropic-ai/sdk";
+import { type EvidenceLedger } from "./evidence";
 
 /** Per-tool HTTP timeout. The tool server p50 is 95–541ms; anything past
  *  10s is a hang and gets surfaced to the model as an is_error result. */
@@ -303,6 +304,7 @@ export async function executeResearchTool(
   name: string,
   input: Record<string, unknown>,
   registry: DocRegistry,
+  evidence?: EvidenceLedger,
 ): Promise<ToolExecution> {
   const known = RESEARCH_TOOLS.some((t) => t.name === name);
   if (!known) {
@@ -328,7 +330,7 @@ export async function executeResearchTool(
       };
     }
     const json = (await r.json()) as Record<string, unknown>;
-    return compactResult(name, json, registry);
+    return compactResult(name, json, registry, evidence);
   } catch (err) {
     const aborted = err instanceof Error && err.name === "AbortError";
     return {
@@ -351,6 +353,7 @@ function compactResult(
   name: string,
   json: Record<string, unknown>,
   registry: DocRegistry,
+  evidence?: EvidenceLedger,
 ): ToolExecution {
   switch (name) {
     case "search_text": {
@@ -493,6 +496,27 @@ function compactResult(
         source_type: json.source_type as string,
       });
       const passages = (json.passages as Array<Record<string, unknown>>) ?? [];
+      // A read response, not a search result, is the sole source of citable
+      // evidence. Each candidate is backed by the exact server-returned text.
+      const evidenceCandidates = evidence && typeof json.text === "string"
+        ? [evidence.register({
+            docId: String(json.doc_id),
+            title: String(json.title ?? ""),
+            author: String(json.author_speaker ?? ""),
+            sourceType: String(json.source_type ?? "text"),
+            locator: {
+              passageStart: Number(json.range_start_passage),
+              passageEnd: Number(json.range_end_passage),
+            },
+            excerpt: String(json.text).slice(0, 400),
+            sourceText: String(json.text),
+          })].map((record) => ({
+            evidence_id: record.id,
+            excerpt: record.excerpt,
+            passage_start: record.locator.passageStart,
+            passage_end: record.locator.passageEnd,
+          }))
+        : [];
       return {
         resultText: JSON.stringify({
           doc_id: json.doc_id,
@@ -506,6 +530,7 @@ function compactResult(
           next_char_offset: json.next_char_offset,
           passages: passages,
           text: json.text,
+          evidence_candidates: evidenceCandidates,
         }),
         resultCount: passages.length,
         isError: false,
