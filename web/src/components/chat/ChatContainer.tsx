@@ -582,8 +582,8 @@ export function ChatContainer({ routeConversationId }: ChatContainerProps = {}) 
         </div>
 
         {/* Messages */}
-        <div className="flex-1 overflow-y-auto px-4 py-6">
-          <div className="mx-auto max-w-[720px] space-y-6">
+        <div className="stable-scrollbar flex-1 overflow-y-auto px-4 py-6">
+          <div className="mx-auto max-w-[1280px] space-y-6">
             {messages.length === 0 && (
               <div className="py-20 text-center">
                 <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10">

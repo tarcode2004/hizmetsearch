@@ -122,6 +122,7 @@
     margin: 0;
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
+    line-height: 1.5;
   }
 
   /* RTL passages */
@@ -232,6 +233,19 @@
   background: var(--color-muted-foreground);
 }
 
+/* Keep a column's geometry fixed as scrolling content appears or vanishes. */
+.stable-scrollbar {
+  scrollbar-gutter: stable;
+}
+
+/* The reading surface intentionally prefers weight and ink over an
+   exaggerated type scale.  Chat answers opt into this class so new
+   components inherit the same scholarly rhythm. */
+.reading-column {
+  max-width: 47.5rem; /* 760px */
+  line-height: 1.5;
+}
+
 /* ──────────────────────────────────────────────────────────────
    Streaming cursor — the only CSS animation kept (Framer does the rest)
    ────────────────────────────────────────────────────────────── */
@@ -267,14 +281,14 @@
   font-size: 0.7rem;
   font-weight: 600;
   line-height: 1;
-  color: var(--color-gilt-deep);
-  background: oklch(78% 0.13 85 / 0.15);
-  border: 1px solid oklch(78% 0.13 85 / 0.35);
+  color: var(--citation-text, var(--color-gilt-deep));
+  background: var(--citation-bg, oklch(78% 0.13 85 / 0.15));
+  border: 1px solid var(--citation-border, oklch(78% 0.13 85 / 0.35));
   text-decoration: none !important;
   vertical-align: baseline;
   position: relative;
   top: -0.15em;
-  transition: all 180ms ease-out;
+  transition: background-color 150ms ease-out, border-color 0ms, color 150ms ease-out, box-shadow 150ms ease-out, text-shadow 0ms;
   cursor: pointer;
 }
 /* Touch devices: expand the effective tap target to ~44px without
@@ -289,8 +303,8 @@
 }
 
 .citation-chip:hover {
-  background: oklch(78% 0.13 85 / 0.25);
-  border-color: oklch(78% 0.13 85 / 0.65);
+  background: color-mix(in srgb, var(--citation-bg, oklch(78% 0.13 85)) 78%, white);
+  border-color: var(--citation-border, oklch(78% 0.13 85 / 0.65));
   box-shadow: var(--shadow-gilt);
   color: var(--color-gilt-deep);
 }
@@ -302,4 +316,11 @@
 .dark .citation-chip:hover {
   background: oklch(75% 0.12 85 / 0.28);
   border-color: oklch(75% 0.12 85 / 0.7);
+}
+
+/* A quote is painted in place. Faux bold uses a text shadow rather than
+   font-weight, preserving the line breaks while the linked chip is hovered. */
+.citation-source-quote {
+  border-radius: 0.25rem;
+  transition: background-color 150ms ease-out, border-color 0ms, color 150ms ease-out, text-shadow 0ms;
 }

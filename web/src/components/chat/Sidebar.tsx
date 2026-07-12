@@ -42,7 +42,7 @@ export function Sidebar({
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto px-2 pb-2">
+      <div className="stable-scrollbar flex-1 overflow-y-auto px-2 pb-2">
         {conversations.length === 0 ? (
           <div className="px-3 py-8 text-center text-xs text-muted-foreground">
             {t("chat.noConversations")}

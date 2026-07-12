@@ -1,9 +1,15 @@
-import { forwardRef, useEffect, useState, type ReactNode } from "react";
+import { forwardRef, useEffect, useState, type CSSProperties, type ReactNode } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Tooltip } from "@/components/ui/Tooltip";
 import { useTranslation } from "@/lib/i18n/I18nProvider";
+import {
+  citationHighlightStore,
+  citationPaint,
+  colorForCitation,
+  useCitationHighlight,
+} from "@/lib/citationHighlights";
 
 interface CitationChipProps {
   number: number;
@@ -16,6 +22,8 @@ interface CitationChipProps {
   rel?: string;
   /** Optional rich hover tooltip (Radix). Replaces the native `title` attr when set. */
   tooltip?: ReactNode;
+  /** A message-scoped id opts the chip into cross-pane citation hover. */
+  highlightMessageId?: string;
 }
 
 /**
@@ -57,12 +65,29 @@ function useCoarsePointer(): boolean {
  */
 export const CitationChip = forwardRef<HTMLAnchorElement, CitationChipProps>(
   function CitationChip(
-    { number, onClick, href, title, children, className, target, rel, tooltip },
+    { number, onClick, href, title, children, className, target, rel, tooltip, highlightMessageId },
     ref
   ) {
     const { t } = useTranslation();
     const coarsePointer = useCoarsePointer();
+    const highlight = useCitationHighlight();
     const content = children ?? number;
+    const baseColor = colorForCitation(number);
+    const paint = highlightMessageId
+      ? citationPaint(highlightMessageId, number, highlight)
+      : {};
+    const hoverProps = highlightMessageId && !coarsePointer
+      ? {
+          onMouseEnter: () => citationHighlightStore.hover(highlightMessageId, number, "strong"),
+          onMouseLeave: () => citationHighlightStore.clear(highlightMessageId, number),
+        }
+      : {};
+    const style = {
+      "--citation-bg": baseColor.bg,
+      "--citation-border": baseColor.border,
+      "--citation-text": baseColor.text,
+      ...paint,
+    } as CSSProperties;
 
     // Touch devices: tap opens the source popover instead of navigating.
     if (tooltip && coarsePointer) {
@@ -73,6 +98,7 @@ export const CitationChip = forwardRef<HTMLAnchorElement, CitationChipProps>(
               type="button"
               className={cn("citation-chip", className)}
               aria-label={`Citation ${number}`}
+              style={style}
             >
               {content}
             </button>
@@ -122,6 +148,8 @@ export const CitationChip = forwardRef<HTMLAnchorElement, CitationChipProps>(
         rel={rel}
         className={cn("citation-chip", className)}
         aria-label={`Citation ${number}`}
+        style={style}
+        {...hoverProps}
       >
         {content}
       </a>
@@ -132,6 +160,8 @@ export const CitationChip = forwardRef<HTMLAnchorElement, CitationChipProps>(
         title={tooltip ? undefined : title}
         className={cn("citation-chip", className)}
         aria-label={`Citation ${number}`}
+        style={style}
+        {...hoverProps}
       >
         {content}
       </button>
@@ -139,7 +169,12 @@ export const CitationChip = forwardRef<HTMLAnchorElement, CitationChipProps>(
 
     if (tooltip) {
       return (
-        <Tooltip content={tooltip} side="top" className="max-w-[320px] p-0">
+        <Tooltip
+          content={tooltip}
+          side="top"
+          delayDuration={1500}
+          className="max-w-[320px] p-0"
+        >
           {chip}
         </Tooltip>
       );

@@ -33,6 +33,11 @@ import {
   withCitationFallthrough,
 } from "@/lib/citations";
 import { fadeInUp, spring } from "@/lib/motion";
+import {
+  citationHighlightStore,
+  citationPaint,
+  useCitationHighlight,
+} from "@/lib/citationHighlights";
 
 interface MessageBubbleProps {
   message: Message;
@@ -45,6 +50,7 @@ export function MessageBubble({ message, onCitationSelect }: MessageBubbleProps)
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const isUser = message.role === "user";
   const isArabic = detectArabicScript(message.content);
+  const citationHighlight = useCitationHighlight();
 
   // Build a chip element for one citation number. `resolveSourceDisplay`
   // backfills title/author from a same-doc sibling entry when the
@@ -69,6 +75,7 @@ export function MessageBubble({ message, onCitationSelect }: MessageBubbleProps)
         href={href}
         onClick={handleClick}
         tooltip={src ? <CitationSourceTooltip source={src} /> : undefined}
+        highlightMessageId={message._id}
         target={onCitationSelect ? undefined : "_blank"}
         rel={onCitationSelect ? undefined : "noopener"}
       />
@@ -124,9 +131,8 @@ export function MessageBubble({ message, onCitationSelect }: MessageBubbleProps)
     >
       {/* Content column with 3px left border in model color */}
       <div
-        className="min-w-0 flex-1 pl-4"
+        className="reading-column min-w-0 flex-1 pl-4"
         style={{
-          maxWidth: "720px",
           borderLeft: `3px solid ${accentColor}`,
         }}
       >
@@ -286,6 +292,15 @@ export function MessageBubble({ message, onCitationSelect }: MessageBubbleProps)
                     chunks are never merged. */}
                 {mergeSourceEntries(message.sources).map((entry) => {
                   const src = entry.source;
+                  const sourceNumber = entry.numbers[0];
+                  const isActive =
+                    citationHighlight.messageId === message._id &&
+                    citationHighlight.sourceNumber === sourceNumber;
+                  const paint = citationPaint(
+                    message._id,
+                    sourceNumber,
+                    citationHighlight,
+                  );
                   return (
                     <a
                       key={src.chunk_id}
@@ -295,12 +310,33 @@ export function MessageBubble({ message, onCitationSelect }: MessageBubbleProps)
                       onClick={
                         onCitationSelect
                           ? (e) => {
+                              if (
+                                window.getSelection()?.toString() ||
+                                (e.target instanceof HTMLElement && e.target.closest("mark"))
+                              ) {
+                                e.preventDefault();
+                                return;
+                              }
                               e.preventDefault();
                               onCitationSelect(src);
                             }
-                          : undefined
+                          : (e) => {
+                              if (
+                                window.getSelection()?.toString() ||
+                                (e.target instanceof HTMLElement && e.target.closest("mark"))
+                              ) {
+                                e.preventDefault();
+                              }
+                            }
                       }
-                      className="group flex items-start gap-2 rounded-lg border border-border/50 bg-card/60 px-3 py-2 text-[11px] no-underline text-foreground hover:bg-card hover:border-primary/20 transition-all"
+                      onMouseEnter={() =>
+                        citationHighlightStore.hover(message._id, sourceNumber, "source")
+                      }
+                      onMouseLeave={() =>
+                        citationHighlightStore.clear(message._id, sourceNumber)
+                      }
+                      className="group flex items-start gap-2 rounded-lg border border-border/50 bg-card/60 px-3 py-2 text-[11px] no-underline text-foreground transition-[border-color,box-shadow,transform,background-color] duration-150 hover:bg-card"
+                      style={isActive ? paint : undefined}
                     >
                       <span className="flex shrink-0 items-center gap-0.5">
                         {entry.numbers.map((n) => (
@@ -308,6 +344,7 @@ export function MessageBubble({ message, onCitationSelect }: MessageBubbleProps)
                             key={n}
                             number={n}
                             className="pointer-events-none"
+                            highlightMessageId={message._id}
                           />
                         ))}
                       </span>
@@ -326,9 +363,20 @@ export function MessageBubble({ message, onCitationSelect }: MessageBubbleProps)
                             {entry.locators.join("; ")}
                           </p>
                         )}
-                        <p className="mt-0.5 text-muted-foreground leading-relaxed">
+                        <mark
+                          className="citation-source-quote mt-0.5 block bg-transparent text-muted-foreground leading-relaxed"
+                          style={isActive ? paint : undefined}
+                          onMouseEnter={(e) => {
+                            e.stopPropagation();
+                            citationHighlightStore.hover(message._id, sourceNumber, "strong");
+                          }}
+                          onMouseLeave={(e) => {
+                            e.stopPropagation();
+                            citationHighlightStore.clear(message._id, sourceNumber);
+                          }}
+                        >
                           {truncate(src.text, 120)}
-                        </p>
+                        </mark>
                         <div className="mt-1">
                           <LanguageBadge language={src.language} />
                         </div>
