@@ -11,50 +11,15 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from posthog import Posthog
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
-from slowapi.util import get_remote_address
 
+from app.ratelimit import limiter, presented_token, token_matches
 from app.routes import search, health, tools
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ── Rate limiter ─────────────────────────────────────────────────────────────
-# IP-based by default. Convex actions all share their outbound IP, so a high
-# default limit + a separate "trusted backend" bypass via the X-API-Key
-# header is the right shape: anonymous browsers get throttled, the Convex
-# backend is unmetered (because it presents the shared RAG_API_KEY).
-def _presented_token(request: Request) -> str:
-    """The credential the caller presented, from either supported header.
-
-    `Authorization: Bearer <token>` is the canonical scheme for the tool
-    server; `X-API-Key: <token>` is kept for byte-compatibility with the
-    existing Convex ragClient.
-    """
-    api_key = request.headers.get("X-API-Key", "")
-    if api_key:
-        return api_key
-    auth = request.headers.get("Authorization", "")
-    if auth.startswith("Bearer "):
-        return auth[len("Bearer "):].strip()
-    return ""
-
-
-def _rate_key(request: Request) -> str:
-    # Convex / FastAPI backend traffic that presents the shared API key gets
-    # a single high-cap bucket so legitimate server-to-server load isn't
-    # throttled. Anonymous traffic is bucketed per IP.
-    token = _presented_token(request)
-    if token and token == os.getenv("RAG_API_KEY", ""):
-        return "trusted-backend"
-    return get_remote_address(request)
-
-
-limiter = Limiter(
-    key_func=_rate_key,
-    default_limits=["120/minute", "1000/hour"],
-)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -76,6 +41,13 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+# ── Rate limiting ────────────────────────────────────────────────────────────
+# The limiter itself lives in app.ratelimit (shared with the route
+# decorators in routes/search.py and routes/tools.py). Trusted-backend
+# traffic — anything presenting the shared RAG_API_KEY — gets a single
+# high-cap bucket; anonymous traffic is bucketed per IP. slowapi's 429
+# handler reads the limiter off app.state.
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -97,8 +69,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# API key auth
+# API key auth — FAIL CLOSED. With the key unset every route except the
+# health check refuses to serve (503) instead of silently going public:
+# a missing env file must never publish /tools/read_document (full-text
+# corpus export) behind valid TLS.
 RAG_API_KEY = os.getenv("RAG_API_KEY", "")
+if not RAG_API_KEY:
+    logger.critical(
+        "RAG_API_KEY is not set — refusing to serve authenticated routes "
+        "(all requests except /api/health will get 503). Set RAG_API_KEY "
+        "and restart."
+    )
 
 
 @app.middleware("http")
@@ -106,22 +87,39 @@ async def api_key_auth(request: Request, call_next):
     # Health check is always public
     if request.url.path == "/api/health":
         return await call_next(request)
-    if RAG_API_KEY:
-        key = _presented_token(request)
-        if key != RAG_API_KEY:
+    # CORS preflights carry no Authorization header by design; hand them
+    # to CORSMiddleware (registered later → runs inner) so browsers get
+    # proper preflight responses. The actual request that follows still
+    # goes through the token check below.
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    if not RAG_API_KEY:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "detail": "Server misconfigured: RAG_API_KEY is not set"
+            },
+        )
+    key = presented_token(request)
+    if not token_matches(key, RAG_API_KEY):
+        # Best-effort telemetry — an analytics failure must never turn
+        # a 401 into a 500.
+        try:
             app.state.posthog.capture(
                 distinct_id="hizmetsearch-api-server",
                 event="api_unauthorized_access",
                 properties={"path": request.url.path},
             )
-            # NB: return a response instead of raising — HTTPException
-            # raised inside raw ASGI middleware bypasses FastAPI's
-            # exception handlers and surfaces as a 500 (the old Fly
-            # deployment had exactly that bug).
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Invalid or missing bearer token / API key"},
-            )
+        except Exception:  # noqa: BLE001
+            logger.debug("posthog capture failed in auth reject", exc_info=True)
+        # NB: return a response instead of raising — HTTPException
+        # raised inside raw ASGI middleware bypasses FastAPI's
+        # exception handlers and surfaces as a 500 (the old Fly
+        # deployment had exactly that bug).
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid or missing bearer token / API key"},
+        )
     return await call_next(request)
 
 

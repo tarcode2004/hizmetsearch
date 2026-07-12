@@ -6,20 +6,20 @@ import time
 import logging
 
 from fastapi import APIRouter, Depends, Request
-from slowapi import Limiter
-from slowapi.util import get_remote_address
 
 from app.deps import get_retrieval_pipeline
+from app.ratelimit import limiter, search_rate_limit
 from app.schemas import SearchRequest, SearchResponse, SearchResultItem, ChunkResponse
 from hizmetrag.retrieval.pipeline import RetrievalPipeline
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# A second limiter scoped to /api/search specifically. The default app-level
-# limiter is intentionally generous; this one tightens search to discourage
-# scraping while still allowing normal interactive use.
-_search_limiter = Limiter(key_func=get_remote_address)
+# /api/search rate limit — dynamic per bucket (see app.ratelimit):
+# trusted-backend traffic (Convex presents the shared RAG_API_KEY, and ALL
+# production users funnel through it) gets a high cap that only exists to
+# contain runaway loops; anonymous per-IP traffic keeps the tight
+# anti-scraping cap.
 
 
 # Logical category → multi-criteria filter spec.
@@ -72,7 +72,7 @@ def _chunk_to_response(chunk) -> ChunkResponse:
 
 
 @router.post("/search", response_model=SearchResponse)
-@_search_limiter.limit("30/minute")
+@limiter.limit(search_rate_limit)
 async def search(
     request: Request,  # noqa: ARG001 — required by slowapi to read remote addr
     body: SearchRequest,

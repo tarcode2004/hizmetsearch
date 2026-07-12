@@ -13,7 +13,8 @@ POST /tools/search_corpus    — Qdrant hybrid semantic search (wraps the
                                existing retrieval pipeline)
 
 All endpoints are POST/JSON and bearer-authed by the app-level middleware
-in app.main. Postgres access is read-only.
+in app.main, with a modest per-token rate limit (TOOLS_RATE_LIMIT) purely
+to bound runaway agent loops. Postgres access is read-only.
 """
 
 from __future__ import annotations
@@ -27,6 +28,7 @@ from pydantic import BaseModel, Field
 
 from app.db import fetch_all
 from app.deps import get_retrieval_pipeline
+from app.ratelimit import TOOLS_RATE_LIMIT, limiter
 from app.routes.search import CATEGORY_SPECS, _chunk_to_response
 from app.schemas import SearchResponse, SearchResultItem
 from app.textwindow import SEPARATOR, compute_read_window
@@ -56,6 +58,19 @@ _LANG_FIELD = {
     "ar": "p.text::pdb.alias('text_ar')",
     "en": "p.text::pdb.alias('text_en')",
 }
+
+
+def _tr_fold(expr: str) -> str:
+    """Turkish-aware case fold for ILIKE-style matching.
+
+    Under a non-Turkish collation lower('I') is 'i' (not 'ı') and
+    lower('İ') is 'i' + U+0307 (combining dot), so a model sending
+    "ibrahim" never matches "İbrahim". Folding the İ/I/ı triple to plain
+    'i' BEFORE lower() (on both the column and the pattern) makes the
+    match locale-independent; the other Turkish letters (Şş Ğğ Çç Öö Üü)
+    lower deterministically in any locale.
+    """
+    return f"lower(translate({expr}, 'İIı', 'iii'))"
 
 
 def _capture(request: Request, tool: str, elapsed_ms: float, **props) -> None:
@@ -149,7 +164,7 @@ def _search_text_where(body: SearchTextRequest) -> tuple[str, list]:
         clauses.append("w.collection = %s")
         params.append(f.collection)
     if f.author_prefix:
-        clauses.append("w.author_speaker ILIKE %s")
+        clauses.append(f"{_tr_fold('w.author_speaker')} LIKE {_tr_fold('%s')}")
         params.append(f"%{f.author_prefix}%")
     if f.work_id:
         clauses.append("p.work_id = %s")
@@ -158,6 +173,7 @@ def _search_text_where(body: SearchTextRequest) -> tuple[str, list]:
 
 
 @router.post("/search_text", response_model=SearchTextResponse)
+@limiter.limit(TOOLS_RATE_LIMIT)
 def search_text(request: Request, body: SearchTextRequest) -> SearchTextResponse:
     t0 = time.perf_counter()
     where, params = _search_text_where(body)
@@ -218,7 +234,7 @@ def search_text(request: Request, body: SearchTextRequest) -> SearchTextResponse
                    -- NULL, so fall back to a whitespace-collapsed prefix.
                    coalesce(
                        pdb.snippet(p.text),
-                       left(regexp_replace(p.text, '\s+', ' ', 'g'), 300)
+                       left(regexp_replace(p.text, '\\s+', ' ', 'g'), 300)
                    ) AS snippet,
                    length(p.text) AS passage_chars
             FROM passages p
@@ -298,6 +314,7 @@ class ListWorksResponse(BaseModel):
 
 
 @router.post("/list_works", response_model=ListWorksResponse)
+@limiter.limit(TOOLS_RATE_LIMIT)
 def list_works(request: Request, body: ListWorksRequest) -> ListWorksResponse:
     t0 = time.perf_counter()
     f = body.filters or ListWorksFilters()
@@ -310,7 +327,7 @@ def list_works(request: Request, body: ListWorksRequest) -> ListWorksResponse:
         clauses.append("w.title ||| %s")
         params.append(f.title_match)
     if f.author_prefix:
-        clauses.append("w.author_speaker ILIKE %s")
+        clauses.append(f"{_tr_fold('w.author_speaker')} LIKE {_tr_fold('%s')}")
         params.append(f"%{f.author_prefix}%")
     if f.collection:
         clauses.append("w.collection = %s")
@@ -324,8 +341,10 @@ def list_works(request: Request, body: ListWorksRequest) -> ListWorksResponse:
     where = " AND ".join(clauses) if clauses else "true"
 
     score_expr = "pdb.score(w.doc_id)" if f.title_match else "NULL::real"
+    # doc_id tiebreak keeps LIMIT/OFFSET pagination stable when scores
+    # and titles collide.
     order = (
-        "pdb.score(w.doc_id) DESC, w.title"
+        "pdb.score(w.doc_id) DESC, w.title, w.doc_id"
         if f.title_match
         else "w.collection, w.title, w.doc_id"
     )
@@ -397,6 +416,7 @@ class WorkOutlineResponse(BaseModel):
 
 
 @router.post("/get_work_outline", response_model=WorkOutlineResponse)
+@limiter.limit(TOOLS_RATE_LIMIT)
 def get_work_outline(request: Request, body: WorkOutlineRequest) -> WorkOutlineResponse:
     t0 = time.perf_counter()
     works = fetch_all(
@@ -484,6 +504,7 @@ class ReadDocumentResponse(BaseModel):
 
 
 @router.post("/read_document", response_model=ReadDocumentResponse)
+@limiter.limit(TOOLS_RATE_LIMIT)
 def read_document(request: Request, body: ReadDocumentRequest) -> ReadDocumentResponse:
     t0 = time.perf_counter()
     works = fetch_all(
@@ -547,8 +568,8 @@ def read_document(request: Request, body: ReadDocumentRequest) -> ReadDocumentRe
         )
 
     lengths = [m["chars"] for m in meta]
-    slices, total_chars, next_offset = compute_read_window(
-        lengths, body.char_offset, body.char_limit
+    slices, total_chars, next_offset, leading_sep, trailing_sep = (
+        compute_read_window(lengths, body.char_offset, body.char_limit)
     )
 
     # Pass 2: fetch only the passages the window intersects, pre-sliced
@@ -575,6 +596,14 @@ def read_document(request: Request, body: ReadDocumentRequest) -> ReadDocumentRe
     parts: list[str] = []
     positions: list[PassagePosition] = []
     cursor = 0
+    # Boundary separators (see compute_read_window): when a window
+    # boundary lands on/inside the two-char separator, the separator is
+    # emitted by exactly one of the adjacent windows — without this,
+    # agents stitching sequential next_char_offset reads got passages
+    # glued together.
+    if leading_sep:
+        parts.append(SEPARATOR)
+        cursor += len(SEPARATOR)
     prev_idx: Optional[int] = None
     for idx, s, e in slices:
         if prev_idx is not None:
@@ -591,6 +620,8 @@ def read_document(request: Request, body: ReadDocumentRequest) -> ReadDocumentRe
         parts.append(part)
         cursor += len(part)
         prev_idx = idx
+    if trailing_sep:
+        parts.append(SEPARATOR)
     text = "".join(parts)
 
     elapsed_ms = (time.perf_counter() - t0) * 1000
@@ -637,6 +668,7 @@ class SearchCorpusRequest(BaseModel):
 
 
 @router.post("/search_corpus", response_model=SearchResponse)
+@limiter.limit(TOOLS_RATE_LIMIT)
 def search_corpus(
     request: Request,
     body: SearchCorpusRequest,
