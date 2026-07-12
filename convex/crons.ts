@@ -20,4 +20,14 @@ crons.interval(
   {},
 );
 
+// Every /search visit inserts a `liveSearches` row carrying a results
+// blob on an anonymous-friendly surface; `cleanupStale` deletes rows
+// older than 30 minutes so the table doesn't grow without bound.
+crons.interval(
+  "cleanup stale live searches",
+  { minutes: 30 },
+  internal.mutations.liveSearches.cleanupStale,
+  {},
+);
+
 export default crons;

@@ -25,7 +25,7 @@
  *       it overrides the platform-wide env key for the chosen model.
  */
 "use node";
-import { action, internalAction, type ActionCtx } from "../_generated/server";
+import { action, type ActionCtx } from "../_generated/server";
 import { ConvexError, v } from "convex/values";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
@@ -46,10 +46,7 @@ import {
   summarizeToolInput,
   type DocRegistry,
 } from "../lib/agentTools";
-import {
-  DAILY_LIMITS,
-  ESTIMATED_RESEARCH_ANSWER_TOKENS,
-} from "../lib/planLimits";
+import { budgetRefusal } from "../lib/budgetGate";
 import { resolveModelId } from "../lib/modelCatalog";
 import { captureGeneration } from "../lib/llmAnalytics";
 
@@ -110,56 +107,39 @@ export const sendMessage = action({
       ? "claude"
       : args.model;
 
-    // 1b. Server-side budget enforcement — refuse if the user is out of
-    //     tokens AND has no BYOK key for the chosen model. The web also
-    //     checks this, but we re-verify here so a malicious client cannot
-    //     bypass the limit by calling the action directly.
+    // 1c. Conversation ownership — refuse to write into a conversation the
+    //     caller doesn't own. `queries/messages.byConversation` already
+    //     hides other users' conversations, but without this check any
+    //     signed-in user could inject messages (and fire research runs)
+    //     into an arbitrary conversation id (IDOR).
+    const conv: any = await ctx.runQuery(
+      internal.queries.conversations.byIdInternal,
+      { conversationId: args.conversationId }
+    );
+    if (!conv || conv.userId !== me._id) {
+      throw new ConvexError("Conversation not found");
+    }
+
+    // 1d. Server-side budget enforcement — refuse if the user is out of
+    //     tokens AND has no BYOK key for the model family that will
+    //     actually execute. The web also checks this, but we re-verify
+    //     here so a malicious client cannot bypass the limit by calling
+    //     the action directly.
+    //
+    //     The BYOK key is resolved for the EFFECTIVE family up front: a
+    //     user whose only active key is for the other family (e.g. a
+    //     Gemini key while deep research runs on Claude) must still pass
+    //     the budget checks — otherwise the run would silently execute
+    //     on the platform key with no cap at all.
     const sub = me.subscription;
-    const byokActive = me.byokActive;
-    if (!byokActive && sub) {
-      const isClaude = effectiveFamily === "claude";
-      const used = isClaude ? sub.claudeTokensUsed : sub.geminiTokensUsed;
-      const limit = isClaude ? sub.claudeTokensLimit : sub.geminiTokensLimit;
-      const credit = isClaude
-        ? sub.claudeCreditTokens ?? 0
-        : sub.geminiCreditTokens ?? 0;
-      if (used >= limit && credit <= 0) {
-        throw new ConvexError(
-          `Token budget exhausted for ${effectiveFamily}. Upgrade your plan, buy a credit pack, or add your own API key in Settings.`
-        );
-      }
-
-      // Deep research pre-flight: one answer costs ~90K billing-equivalent
-      // tokens. Refuse up front when the remaining monthly allotment (plus
-      // credits) can't cover it, instead of starting a 60s research run
-      // that would massively overdraw the budget.
-      if (args.agentic) {
-        const remainingMonthly = Math.max(0, limit - used) + credit;
-        if (remainingMonthly < ESTIMATED_RESEARCH_ANSWER_TOKENS) {
-          throw new ConvexError(
-            `Not enough Claude tokens left for a deep research answer (needs ~${Math.round(ESTIMATED_RESEARCH_ANSWER_TOKENS / 1000)}K, ${Math.round(remainingMonthly / 1000)}K remaining). Upgrade your plan, buy a credit pack, or add your own Anthropic API key in Settings.`
-          );
-        }
-      }
-
-      // Enforce daily cap as well — protects against runaway scripts
-      // draining the monthly allotment in one bad day.
-      const dailyCap = DAILY_LIMITS[sub.plan as "free" | "pro" | "scholar"];
-      if (dailyCap) {
-        const todayUsed = isClaude
-          ? sub.claudeTokensToday ?? 0
-          : sub.geminiTokensToday ?? 0;
-        const dayCap = isClaude ? dailyCap.claude : dailyCap.gemini;
-        const dayResetAt = sub.dayResetAt ?? 0;
-        // Only enforce if we're inside the current day window — when the
-        // window has rolled over the trackUsage mutation will reset the
-        // counter on the next call.
-        if (Date.now() < dayResetAt && todayUsed >= dayCap && credit <= 0) {
-          throw new ConvexError(
-            `Daily token cap reached for ${effectiveFamily}. Resets in a few hours, or buy a credit pack / use your own API key.`
-          );
-        }
-      }
+    const byokKey = await resolveByokKey(ctx, me._id, effectiveFamily);
+    if (!byokKey) {
+      const refusal = budgetRefusal({
+        sub,
+        family: effectiveFamily,
+        agentic: !!args.agentic,
+      });
+      if (refusal) throw new ConvexError(refusal);
     }
 
     // Resolve the user's variant pick to an actual SDK model id. The
@@ -194,7 +174,8 @@ export const sendMessage = action({
     try {
       // ─── Agentic deep-research path (Sonnet 5 tool loop) ───────
       if (args.agentic) {
-        const byokKey = await resolveByokKey(ctx, me._id, "claude");
+        // byokKey was resolved above for the effective family ("claude"
+        // whenever agentic is set).
         const apiKey = byokKey ?? process.env.ANTHROPIC_API_KEY;
         if (!apiKey) throw new Error("Anthropic API key not configured");
 
@@ -345,8 +326,8 @@ export const sendMessage = action({
             ? buildChatGeminiPrompt(promptOpts)
             : buildChatGeminiLeanPrompt(promptOpts);
 
-      // 7. Resolve API key (BYOK if active, else env)
-      const byokKey = await resolveByokKey(ctx, me._id, args.model);
+      // 7. byokKey (resolved above for args.model === effectiveFamily)
+      //    overrides the platform env key below.
 
       // 8. Stream the response
       let accumulated = "";
@@ -595,10 +576,6 @@ interface ResearchResult {
  *  - tool errors come back as is_error tool_results (never dropped); all
  *    results of a parallel round go back in ONE user message;
  *  - per-round usage (incl. cache split) is logged and summed.
- *
- * `simulateCrashAfterRound` is a test hook (see researchLoopTest): the
- * loop throws after N completed rounds so the watchdog cron path can be
- * exercised deterministically.
  */
 async function runResearchAgent(opts: {
   ctx: ActionCtx;
@@ -606,7 +583,6 @@ async function runResearchAgent(opts: {
   apiKey: string;
   question: string;
   history: Array<{ role: string; content: string }>;
-  simulateCrashAfterRound?: number;
 }): Promise<ResearchResult> {
   const { ctx, assistantMsgId, question } = opts;
   const ragUrl = process.env.RAG_API_URL ?? "http://localhost:8000";
@@ -861,12 +837,6 @@ async function runResearchAgent(opts: {
 
     messages.push({ role: "user", content: resultBlocks });
 
-    if (opts.simulateCrashAfterRound && round >= opts.simulateCrashAfterRound) {
-      throw new Error(
-        `Simulated mid-loop crash after round ${round} (test hook)`
-      );
-    }
-
     if (round === RESEARCH_MAX_ROUNDS) {
       // Safety cap hit without a natural stop — keep whatever narration
       // we have rather than leaving the message empty.
@@ -981,101 +951,6 @@ function extractResearchSources(
 
   return { display, sources };
 }
-
-// ── Internal test harness ──────────────────────────────────────────────
-
-/**
- * Headless E2E harness for the research loop (dev verification — see
- * ticket T4). Bypasses Clerk auth and budget checks: creates a synthetic
- * test conversation, runs the exact same `runResearchAgent` machinery the
- * public action uses, and finalizes the message.
- *
- * With `simulateCrashAfterRound` set, the loop throws mid-flight WITHOUT
- * finalizing — leaving the message stuck in `isStreaming: true` so the
- * watchdog (`mutations/messages.finalizeStuck`) can be exercised.
- *
- * Run with:
- *   npx convex run actions/chat:researchLoopTest '{"question": "…"}'
- */
-export const researchLoopTest = internalAction({
-  args: {
-    question: v.string(),
-    simulateCrashAfterRound: v.optional(v.number()),
-  },
-  handler: async (
-    ctx,
-    args
-  ): Promise<{
-    conversationId: Id<"conversations">;
-    messageId: Id<"messages">;
-    usage: ResearchUsage;
-    steps: ResearchStep[];
-    sourceCount: number;
-    sources: Array<{ title: string; author: string; doc_id: string; locator: string }>;
-    contentPreview: string;
-  }> => {
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) throw new Error("ANTHROPIC_API_KEY not configured");
-
-    // Explicit annotation breaks the TS circularity from same-file
-    // internal.* references (per Convex guidelines).
-    const { conversationId }: { userId: Id<"users">; conversationId: Id<"conversations"> } =
-      await ctx.runMutation(
-        internal.mutations.testSupport.ensureTestConversation,
-        { title: `Research loop test: ${args.question.slice(0, 50)}` }
-      );
-
-    await ctx.runMutation(internal.mutations.messages.create, {
-      conversationId,
-      role: "user",
-      content: args.question,
-      isStreaming: false,
-    });
-    const assistantMsgId: Id<"messages"> = await ctx.runMutation(
-      internal.mutations.messages.create,
-      {
-        conversationId,
-        role: "assistant",
-        content: "",
-        model: "claude",
-        modelVariant: RESEARCH_MODEL,
-        isStreaming: true,
-      }
-    );
-
-    // Intentionally NOT wrapped in try/catch when simulating a crash —
-    // the message must stay isStreaming:true for the watchdog test.
-    const result = await runResearchAgent({
-      ctx,
-      assistantMsgId,
-      apiKey,
-      question: args.question,
-      history: [],
-      simulateCrashAfterRound: args.simulateCrashAfterRound,
-    });
-
-    await ctx.runMutation(internal.mutations.messages.finalize, {
-      messageId: assistantMsgId,
-      content: result.content,
-      sources: result.sources,
-    });
-
-    return {
-      conversationId,
-      messageId: assistantMsgId,
-      usage: result.usage,
-      steps: result.steps,
-      sourceCount: result.sources.length,
-      sources: result.sources.map((s) => ({
-        title: s.title,
-        author: s.author_speaker,
-        doc_id: s.doc_id,
-        locator: s.chapter_section,
-      })),
-      contentPreview: result.content.slice(0, 1500),
-    };
-  },
-});
 
 // ── Shared helpers ─────────────────────────────────────────────────────
 

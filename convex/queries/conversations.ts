@@ -1,4 +1,4 @@
-import { query } from "../_generated/server";
+import { query, internalQuery } from "../_generated/server";
 import { v } from "convex/values";
 import { getCurrentUser } from "../users";
 
@@ -62,5 +62,17 @@ export const getShared = query({
       })),
       author: author?.name ?? null,
     };
+  },
+});
+
+/**
+ * Internal read of a conversation row by id — used by actions (e.g.
+ * `chat.sendMessage`) to verify ownership before writing messages into
+ * the conversation. Never exposed to clients.
+ */
+export const byIdInternal = internalQuery({
+  args: { conversationId: v.id("conversations") },
+  handler: async (ctx, args) => {
+    return await ctx.db.get(args.conversationId);
   },
 });
