@@ -8,7 +8,7 @@
  */
 import { internalMutation } from "../_generated/server";
 import { v } from "convex/values";
-import { PLAN_LIMITS } from "../lib/planLimits";
+import { PLAN_LIMITS, billingEquivalentTokens } from "../lib/planLimits";
 
 /** Re-exported for convenience; canonical definition is in lib/planLimits.ts. */
 export { PLAN_LIMITS };
@@ -45,6 +45,14 @@ export const initSubscription = internalMutation({
 /**
  * Increment token usage after a query/chat for a specific model.
  *
+ * `tokensConsumed` is the FACE-VALUE total (input incl. cache reads/writes
+ * + output). When the caller passes the cache split (the deep-research
+ * loop does), the amount charged against the quota is re-weighted to
+ * billing-equivalent tokens: cache reads x0.1, cache writes x1.25 — see
+ * `billingEquivalentTokens` in lib/planLimits.ts. Calls without a cache
+ * split (plain chat, search synthesis) charge face value, which for
+ * uncached traffic is identical to billing-equivalent.
+ *
  * Credit-pack tokens are consumed first; only when those are exhausted do
  * we draw down the monthly allotment. Auto-resets the monthly counters
  * once the resetAt timestamp is reached.
@@ -54,6 +62,10 @@ export const trackUsage = internalMutation({
     userId: v.id("users"),
     model: v.union(v.literal("claude"), v.literal("gemini")),
     tokensConsumed: v.number(),
+    /** Prompt-cache read tokens included in `tokensConsumed` (face value). */
+    cacheReadTokens: v.optional(v.number()),
+    /** Prompt-cache write tokens included in `tokensConsumed` (face value). */
+    cacheCreationTokens: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const sub = await ctx.db
@@ -90,7 +102,15 @@ export const trackUsage = internalMutation({
     // credits are pre-paid)
     let claudeCredit = sub.claudeCreditTokens ?? 0;
     let geminiCredit = sub.geminiCreditTokens ?? 0;
-    let remaining = args.tokensConsumed;
+    // Charge the billing-equivalent amount, not the face value. The face
+    // total minus the cache split gives uncached input + output; reads and
+    // writes are re-added at their billed weights (0.1x / 1.25x).
+    let remaining = billingEquivalentTokens({
+      inputTokens: args.tokensConsumed,
+      outputTokens: 0,
+      cacheReadTokens: args.cacheReadTokens,
+      cacheCreationTokens: args.cacheCreationTokens,
+    });
     if (isClaude && claudeCredit > 0) {
       const drawn = Math.min(claudeCredit, remaining);
       claudeCredit -= drawn;

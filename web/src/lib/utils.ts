@@ -1,5 +1,6 @@
 import { type ClassValue, clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
+import { ConvexError } from "convex/values";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -36,4 +37,22 @@ export function detectArabicScript(text: string): boolean {
 export function truncate(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
   return text.slice(0, maxLength).trimEnd() + "…";
+}
+
+/**
+ * Extract a user-facing message from a caught server error.
+ *
+ * Convex redacts plain `Error` messages from actions/mutations in
+ * production ("Server Error"), but propagates `ConvexError` data
+ * verbatim. Server-side quota / pre-flight failures throw ConvexError
+ * with a human-readable string; everything else falls back.
+ */
+export function userFacingError(err: unknown, fallback: string): string {
+  if (err instanceof ConvexError && typeof err.data === "string") {
+    return err.data;
+  }
+  if (err instanceof Error && err.message && !/Server Error/i.test(err.message)) {
+    return err.message;
+  }
+  return fallback;
 }

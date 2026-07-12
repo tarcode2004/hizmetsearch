@@ -30,6 +30,8 @@ export interface UserState {
   name?: string;
   claudeTokensUsed: number;
   claudeTokensLimit: number;
+  /** Remaining pre-paid Claude credit-pack tokens (0 when none). */
+  claudeCreditTokens?: number;
   geminiTokensUsed: number;
   geminiTokensLimit: number;
   byokActive: boolean;
@@ -49,9 +51,9 @@ const AuthCtx = createContext<AuthContext | null>(null);
 
 const TIER_LIMITS: Record<Plan, { claude: number; gemini: number }> = {
   anonymous: { claude: 0, gemini: 5_000 },
-  free: { claude: 20_000, gemini: 100_000 },
-  pro: { claude: 200_000, gemini: 1_000_000 },
-  scholar: { claude: 1_000_000, gemini: 5_000_000 },
+  free: { claude: 400_000, gemini: 100_000 },
+  pro: { claude: 6_000_000, gemini: 1_000_000 },
+  scholar: { claude: 30_000_000, gemini: 5_000_000 },
 };
 
 const MOCK_STORAGE_KEY = "hizmetsearch.user";
@@ -201,6 +203,7 @@ function ClerkBackedProvider({ children }: { children: ReactNode }) {
       name: clerkUser.fullName ?? clerkUser.username ?? undefined,
       claudeTokensUsed: usage.claudeTokensUsed,
       claudeTokensLimit: usage.claudeTokensLimit,
+      claudeCreditTokens: usage.claudeCreditTokens ?? 0,
       geminiTokensUsed: usage.geminiTokensUsed,
       geminiTokensLimit: usage.geminiTokensLimit,
       byokActive: usage.byokActive,

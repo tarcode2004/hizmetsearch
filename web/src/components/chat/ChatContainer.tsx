@@ -20,7 +20,7 @@ import {
   ChevronDown,
   Telescope,
 } from "lucide-react";
-import { cn, detectArabicScript } from "@/lib/utils";
+import { cn, detectArabicScript, userFacingError } from "@/lib/utils";
 import { buildSourceViewerUrl } from "@/lib/source-viewer";
 import { BACKEND_ENABLED } from "@/lib/env";
 import { downloadConversation } from "@/lib/chat/exportConversation";
@@ -32,6 +32,7 @@ import {
   trackConversationDeleted,
 } from "@/lib/analytics";
 import { defaultVariantId } from "../../../../convex/lib/modelCatalog";
+import { ESTIMATED_RESEARCH_ANSWER_TOKENS } from "../../../../convex/lib/planLimits";
 import type { AIModel, ChunkResult, Message } from "@/lib/types";
 import {
   MOCK_CONVERSATIONS,
@@ -101,6 +102,15 @@ export function ChatContainer({ routeConversationId }: ChatContainerProps = {}) 
   // runs on Claude (and counts against the Claude budget) regardless of
   // the selected model family, so it now defaults OFF for everyone.
   const [agentic, setAgentic] = useState(false);
+  // Deep research always executes on Claude — one answer costs ~90K
+  // billing-equivalent tokens. Mirror of the server-side pre-flight in
+  // convex/actions/chat.ts so the toggle can disable up front instead of
+  // failing after the user hits send.
+  const claudeRemaining =
+    Math.max(0, user.claudeTokensLimit - user.claudeTokensUsed) +
+    (user.claudeCreditTokens ?? 0);
+  const canDeepResearch =
+    user.byokActive || claudeRemaining >= ESTIMATED_RESEARCH_ANSWER_TOKENS;
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // ── Live Convex queries ───────────────────────────────────
@@ -246,9 +256,14 @@ export function ChatContainer({ routeConversationId }: ChatContainerProps = {}) 
   };
 
   const handleSend = async (content: string) => {
-    // Check token budget for chosen model
-    const used = model === "claude" ? user.claudeTokensUsed : user.geminiTokensUsed;
-    const limit = model === "claude" ? user.claudeTokensLimit : user.geminiTokensLimit;
+    // Check token budget for the model that will actually execute — deep
+    // research always runs (and charges) as Claude even when the Gemini
+    // family is selected.
+    const effectiveModel: AIModel = agentic ? "claude" : model;
+    const used =
+      effectiveModel === "claude" ? user.claudeTokensUsed : user.geminiTokensUsed;
+    const limit =
+      effectiveModel === "claude" ? user.claudeTokensLimit : user.geminiTokensLimit;
     if (!user.byokActive && used >= limit) {
       if (user.plan === "anonymous") {
         showUpgrade("anon-tokens-exhausted");
@@ -256,6 +271,22 @@ export function ChatContainer({ routeConversationId }: ChatContainerProps = {}) 
         showUpgrade("free-to-pro");
       } else if (user.plan === "pro") {
         showUpgrade("pro-to-scholar");
+      }
+      return;
+    }
+    // Deep research pre-flight: refuse before sending when the remaining
+    // Claude budget can't cover one ~90K billing-equivalent answer.
+    if (agentic && !canDeepResearch) {
+      if (user.plan === "anonymous") {
+        showUpgrade("anon-claude-locked");
+      } else if (user.plan === "free") {
+        showUpgrade("free-claude-exhausted");
+      } else if (user.plan === "pro") {
+        showUpgrade("pro-claude-exhausted");
+      } else {
+        toast.error(
+          "Monthly Claude budget exhausted — buy a credit pack or add your own Anthropic API key in Settings."
+        );
       }
       return;
     }
@@ -284,9 +315,7 @@ export function ChatContainer({ routeConversationId }: ChatContainerProps = {}) 
       } catch (err) {
         console.error("sendMessage failed", err);
         captureError(err, { where: "chat.sendMessage", model });
-        toast.error(
-          err instanceof Error ? err.message : "Failed to send message"
-        );
+        toast.error(userFacingError(err, "Failed to send message"));
       } finally {
         setIsLoading(false);
       }
@@ -496,14 +525,39 @@ export function ChatContainer({ routeConversationId }: ChatContainerProps = {}) 
             )}
             <button
               type="button"
-              onClick={() => setAgentic((v) => !v)}
+              onClick={() => {
+                if (!canDeepResearch && !agentic) {
+                  // Out of budget: surface the friendly upgrade path
+                  // instead of arming a toggle that can't run.
+                  if (user.plan === "anonymous") {
+                    showUpgrade("anon-claude-locked");
+                  } else if (user.plan === "free") {
+                    showUpgrade("free-claude-exhausted");
+                  } else if (user.plan === "pro") {
+                    showUpgrade("pro-claude-exhausted");
+                  } else {
+                    toast.error(
+                      "Monthly Claude budget exhausted — buy a credit pack or add your own Anthropic API key in Settings."
+                    );
+                  }
+                  return;
+                }
+                setAgentic((v) => !v);
+              }}
+              aria-disabled={!canDeepResearch && !agentic}
               className={cn(
                 "flex h-7 items-center gap-1 rounded-md border px-2 text-[11px] transition-colors",
                 agentic
                   ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
-                  : "border-border bg-card text-muted-foreground hover:text-foreground hover:bg-muted",
+                  : !canDeepResearch
+                    ? "cursor-not-allowed border-border bg-card text-muted-foreground/50"
+                    : "border-border bg-card text-muted-foreground hover:text-foreground hover:bg-muted",
               )}
-              title="Deep research: an AI agent iteratively searches and reads the corpus before answering (runs on Claude, uses Claude tokens). Slower and more expensive."
+              title={
+                !canDeepResearch && !agentic
+                  ? `Not enough Claude tokens left this month for a deep research answer (~${Math.round(ESTIMATED_RESEARCH_ANSWER_TOKENS / 1000)}K needed). Upgrade your plan, buy a credit pack, or add your own API key in Settings.`
+                  : "Deep research: an AI agent iteratively searches and reads the corpus before answering (runs on Claude, uses Claude tokens). Slower and more expensive."
+              }
             >
               <Telescope className="h-3 w-3" />
               <span className="hidden sm:inline">Deep search</span>

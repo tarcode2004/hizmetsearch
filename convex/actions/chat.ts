@@ -26,7 +26,7 @@
  */
 "use node";
 import { action, internalAction, type ActionCtx } from "../_generated/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import Anthropic from "@anthropic-ai/sdk";
@@ -46,7 +46,10 @@ import {
   summarizeToolInput,
   type DocRegistry,
 } from "../lib/agentTools";
-import { DAILY_LIMITS } from "../lib/planLimits";
+import {
+  DAILY_LIMITS,
+  ESTIMATED_RESEARCH_ANSWER_TOKENS,
+} from "../lib/planLimits";
 import { resolveModelId } from "../lib/modelCatalog";
 import { captureGeneration } from "../lib/llmAnalytics";
 
@@ -121,9 +124,22 @@ export const sendMessage = action({
         ? sub.claudeCreditTokens ?? 0
         : sub.geminiCreditTokens ?? 0;
       if (used >= limit && credit <= 0) {
-        throw new Error(
+        throw new ConvexError(
           `Token budget exhausted for ${effectiveFamily}. Upgrade your plan, buy a credit pack, or add your own API key in Settings.`
         );
+      }
+
+      // Deep research pre-flight: one answer costs ~90K billing-equivalent
+      // tokens. Refuse up front when the remaining monthly allotment (plus
+      // credits) can't cover it, instead of starting a 60s research run
+      // that would massively overdraw the budget.
+      if (args.agentic) {
+        const remainingMonthly = Math.max(0, limit - used) + credit;
+        if (remainingMonthly < ESTIMATED_RESEARCH_ANSWER_TOKENS) {
+          throw new ConvexError(
+            `Not enough Claude tokens left for a deep research answer (needs ~${Math.round(ESTIMATED_RESEARCH_ANSWER_TOKENS / 1000)}K, ${Math.round(remainingMonthly / 1000)}K remaining). Upgrade your plan, buy a credit pack, or add your own Anthropic API key in Settings.`
+          );
+        }
       }
 
       // Enforce daily cap as well — protects against runaway scripts
@@ -139,7 +155,7 @@ export const sendMessage = action({
         // window has rolled over the trackUsage mutation will reset the
         // counter on the next call.
         if (Date.now() < dayResetAt && todayUsed >= dayCap && credit <= 0) {
-          throw new Error(
+          throw new ConvexError(
             `Daily token cap reached for ${effectiveFamily}. Resets in a few hours, or buy a credit pack / use your own API key.`
           );
         }
@@ -224,8 +240,10 @@ export const sendMessage = action({
         });
 
         // Track token usage across ALL loop rounds (skip when BYOK).
-        // inputTokens already includes cache reads/writes at face value;
-        // T6 owns re-weighting quotas for cached tokens.
+        // inputTokens includes cache reads/writes at face value; passing
+        // the cache split lets trackUsage charge the billing-equivalent
+        // amount (reads x0.1, writes x1.25) against the quota while
+        // analytics above keep the raw numbers.
         if (
           !byokKey &&
           (result.usage.inputTokens || result.usage.outputTokens)
@@ -235,6 +253,8 @@ export const sendMessage = action({
             model: "claude",
             tokensConsumed:
               result.usage.inputTokens + result.usage.outputTokens,
+            cacheReadTokens: result.usage.cacheReadTokens,
+            cacheCreationTokens: result.usage.cacheCreationTokens,
           });
         }
 

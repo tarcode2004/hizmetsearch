@@ -20,14 +20,17 @@ export interface PlanConfig {
 }
 
 /**
- * Plans calibrated to actual API costs (April 2026):
- *   Claude Opus 4.6: ~$19/1M blended
- *   Gemini 3.1 Pro:  ~$9/1M blended
+ * Plans calibrated to billing-equivalent token accounting (July 2026):
+ * quotas charge cache reads at 0.1x and cache writes at 1.25x (see
+ * convex/lib/planLimits.ts), so one deep-research answer costs ~95K
+ * billing-equivalent Claude tokens (~$0.34 at full Sonnet 5 pricing).
  *
  * Anonymous = no account, Gemini-only, 5K tokens.
- * Free = signed up, 20K Claude / 100K Gemini.
- * Pro = $9.99, 200K / 1M.
- * Scholar = $24.99, 1M / 5M.
+ * Free = signed up, 400K Claude (~4 deep answers) / 100K Gemini.
+ * Pro = $9.99, 6M Claude (60+ deep answers) / 1M Gemini.
+ * Scholar = $24.99, 30M Claude (300+ deep answers) / 5M Gemini.
+ *
+ * Keep in sync with convex/lib/planLimits.ts (server enforcement).
  */
 export const PLANS: Record<Plan, PlanConfig> = {
   anonymous: {
@@ -48,10 +51,10 @@ export const PLANS: Record<Plan, PlanConfig> = {
     nameKey: "plan.free.name",
     price: "$0",
     priceMonthly: 0,
-    claudeTokens: 20_000,
+    claudeTokens: 400_000,
     geminiTokens: 100_000,
     featureKeys: [
-      "plan.feature.20kClaude",
+      "plan.feature.freeClaude",
       "plan.feature.100kGemini",
       "plan.feature.aiAnswerAndSearch",
       "plan.feature.chatAndVoice",
@@ -63,10 +66,10 @@ export const PLANS: Record<Plan, PlanConfig> = {
     nameKey: "plan.pro.name",
     price: "$9.99",
     priceMonthly: 9.99,
-    claudeTokens: 200_000,
+    claudeTokens: 6_000_000,
     geminiTokens: 1_000_000,
     featureKeys: [
-      "plan.feature.200kClaude",
+      "plan.feature.proClaude",
       "plan.feature.1mGemini",
       "plan.feature.allFreeFeatures",
       "plan.feature.priority",
@@ -80,10 +83,10 @@ export const PLANS: Record<Plan, PlanConfig> = {
     nameKey: "plan.scholar.name",
     price: "$24.99",
     priceMonthly: 24.99,
-    claudeTokens: 1_000_000,
+    claudeTokens: 30_000_000,
     geminiTokens: 5_000_000,
     featureKeys: [
-      "plan.feature.1mClaude",
+      "plan.feature.scholarClaude",
       "plan.feature.5mGemini",
       "plan.feature.allProFeatures",
       "plan.feature.priorityApi",

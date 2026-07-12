@@ -117,3 +117,67 @@ export const alignTestUserToken = internalMutation({
     });
   },
 });
+
+/**
+ * Upsert the synthetic test user's subscription with explicit budgets
+ * (CLI-only). Used to verify billing-equivalent quota deduction and the
+ * quota-exceeded pre-flight without a Stripe flow.
+ */
+export const setTestSubscription = internalMutation({
+  args: {
+    userId: v.id("users"),
+    plan: v.optional(
+      v.union(v.literal("free"), v.literal("pro"), v.literal("scholar"))
+    ),
+    claudeLimit: v.optional(v.number()),
+    claudeUsed: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const nextMonth = now + 30 * 24 * 60 * 60 * 1000;
+    const existing = await ctx.db
+      .query("subscriptions")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .first();
+    const patch = {
+      plan: args.plan ?? "free",
+      status: "active" as const,
+      currentPeriodEnd: nextMonth,
+      claudeTokensUsed: args.claudeUsed ?? 0,
+      geminiTokensUsed: 0,
+      claudeTokensLimit: args.claudeLimit ?? 400_000,
+      geminiTokensLimit: 100_000,
+      claudeCreditTokens: 0,
+      geminiCreditTokens: 0,
+      claudeTokensToday: 0,
+      geminiTokensToday: 0,
+      dayResetAt: now + 24 * 60 * 60 * 1000,
+      payAsYouGoEnabled: false,
+      resetAt: nextMonth,
+    };
+    if (existing) {
+      await ctx.db.patch(existing._id, patch);
+      return existing._id;
+    }
+    return await ctx.db.insert("subscriptions", { userId: args.userId, ...patch });
+  },
+});
+
+/** Read the test user's subscription usage counters (CLI-only). */
+export const getTestSubscription = internalQuery({
+  args: { userId: v.id("users") },
+  handler: async (ctx, args) => {
+    const sub = await ctx.db
+      .query("subscriptions")
+      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .first();
+    if (!sub) return null;
+    return {
+      plan: sub.plan,
+      claudeTokensUsed: sub.claudeTokensUsed,
+      claudeTokensLimit: sub.claudeTokensLimit,
+      claudeTokensToday: sub.claudeTokensToday ?? 0,
+      claudeCreditTokens: sub.claudeCreditTokens ?? 0,
+    };
+  },
+});

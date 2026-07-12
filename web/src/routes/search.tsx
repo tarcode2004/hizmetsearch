@@ -9,6 +9,7 @@ import { SearchToggle } from "@/components/search/SearchToggle";
 import { FilterPanel } from "@/components/search/FilterPanel";
 import { ResultsList } from "@/components/search/ResultsList";
 import { AIAnswer } from "@/components/search/AIAnswer";
+import { DeepResearchButton } from "@/components/search/DeepResearchButton";
 import { SearchHistorySidebar } from "@/components/search/SearchHistorySidebar";
 import { Loader2, Menu, X, RefreshCw, AlertCircle, ExternalLink } from "lucide-react";
 import type { SearchMode, SearchResult } from "@/lib/types";
@@ -585,6 +586,13 @@ export function SearchPage() {
 
                 {!isLoading && !isRerunning && (
                   <div className="space-y-4">
+                    {/* Deep research entry point — sits next to the AI
+                        answer area but never touches the instant answer
+                        itself. Live backend only (the mock demo has no
+                        agentic pipeline to run). */}
+                    {BACKEND_ENABLED && (
+                      <DeepResearchButton query={query} />
+                    )}
                     {mode === "ai" && aiAnswer && (
                       <AIAnswer
                         answer={aiAnswer}

@@ -52,12 +52,17 @@ Open <http://localhost:5173>.
 
 ## Plans
 
-| Plan | Price | Claude tokens | Gemini tokens |
-|------|-------|---------------|---------------|
-| Anonymous | $0 | — | 5K/mo |
-| Free | $0 | 20K/mo | 100K/mo |
-| Pro | $9.99/mo | 200K/mo | 1M/mo |
-| Scholar | $24.99/mo | 1M/mo | 5M/mo |
+Claude usage is metered in **billing-equivalent tokens**: prompt-cache
+reads count at 0.1x and cache writes at 1.25x face value, matching how
+Anthropic bills them. One deep-research answer costs ~95K
+billing-equivalent tokens (~186K face-value input, ~99.99% cached).
+
+| Plan | Price | Claude tokens | ≈ deep research answers | Gemini tokens |
+|------|-------|---------------|-------------------------|---------------|
+| Anonymous | $0 | — | — | 5K/mo |
+| Free | $0 | 400K/mo | ~4/mo | 100K/mo |
+| Pro | $9.99/mo | 6M/mo | 60+/mo | 1M/mo |
+| Scholar | $24.99/mo | 30M/mo | 300+/mo | 5M/mo |
 
 Bring your own Gemini or Claude API key to remove all limits on any plan.
 
