@@ -30,9 +30,13 @@ COPY hizmetsearch/api/app /app/app
 # Install the hizmetrag library + API runtime deps. We pip-install
 # from the local source so the api Docker image doesn't need to fetch
 # the package over the network.
-RUN pip install --no-cache-dir -e "/app[reranker]" 2>/dev/null \
- || pip install --no-cache-dir -e "/app"
-RUN pip install --no-cache-dir fastapi 'uvicorn[standard]' slowapi posthog
+#
+# NOTE: we deliberately do NOT install the [reranker] extra (FlagEmbedding
+# pulls PyTorch, ~2GB). Production reranking goes through the remote BGE
+# sidecar (RERANKER_URL) that runs on the same box as this container.
+RUN pip install --no-cache-dir -e "/app"
+RUN pip install --no-cache-dir fastapi 'uvicorn[standard]' slowapi posthog \
+    'psycopg[binary,pool]>=3.1'
 
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8000

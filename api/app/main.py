@@ -7,14 +7,15 @@ import os
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from posthog import Posthog
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from app.routes import search, health
+from app.routes import search, health, tools
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -24,12 +25,28 @@ logger = logging.getLogger(__name__)
 # default limit + a separate "trusted backend" bypass via the X-API-Key
 # header is the right shape: anonymous browsers get throttled, the Convex
 # backend is unmetered (because it presents the shared RAG_API_KEY).
+def _presented_token(request: Request) -> str:
+    """The credential the caller presented, from either supported header.
+
+    `Authorization: Bearer <token>` is the canonical scheme for the tool
+    server; `X-API-Key: <token>` is kept for byte-compatibility with the
+    existing Convex ragClient.
+    """
+    api_key = request.headers.get("X-API-Key", "")
+    if api_key:
+        return api_key
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer "):
+        return auth[len("Bearer "):].strip()
+    return ""
+
+
 def _rate_key(request: Request) -> str:
     # Convex / FastAPI backend traffic that presents the shared API key gets
     # a single high-cap bucket so legitimate server-to-server load isn't
     # throttled. Anonymous traffic is bucketed per IP.
-    api_key = request.headers.get("X-API-Key", "")
-    if api_key and api_key == os.getenv("RAG_API_KEY", ""):
+    token = _presented_token(request)
+    if token and token == os.getenv("RAG_API_KEY", ""):
         return "trusted-backend"
     return get_remote_address(request)
 
@@ -90,19 +107,27 @@ async def api_key_auth(request: Request, call_next):
     if request.url.path == "/api/health":
         return await call_next(request)
     if RAG_API_KEY:
-        key = request.headers.get("X-API-Key", "")
+        key = _presented_token(request)
         if key != RAG_API_KEY:
             app.state.posthog.capture(
                 distinct_id="hizmetsearch-api-server",
                 event="api_unauthorized_access",
                 properties={"path": request.url.path},
             )
-            raise HTTPException(status_code=401, detail="Invalid API key")
+            # NB: return a response instead of raising — HTTPException
+            # raised inside raw ASGI middleware bypasses FastAPI's
+            # exception handlers and surfaces as a 500 (the old Fly
+            # deployment had exactly that bug).
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "Invalid or missing bearer token / API key"},
+            )
     return await call_next(request)
 
 
 app.include_router(search.router, prefix="/api")
 app.include_router(health.router, prefix="/api")
+app.include_router(tools.router, prefix="/tools")
 
 
 @app.get("/")
