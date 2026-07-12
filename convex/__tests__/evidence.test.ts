@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   EvidenceLedger,
+  extractEvidenceUsedBlock,
   normalizeEvidenceText,
+  numberEvidenceMarkers,
   validateEvidenceUsage,
 } from "../lib/evidence";
 import { executeResearchTool, type DocRegistry } from "../lib/agentTools";
@@ -85,5 +87,13 @@ describe("tool evidence boundary", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+describe("final evidence protocol", () => {
+  it("strips the machine evidence block and numbers internal markers", () => {
+    const parsed = extractEvidenceUsedBlock('Claim [^ev_02] and [^ev_01]\n{"evidence_used":["ev_02","ev_01"]}');
+    expect(parsed).toEqual({ display: "Claim [^ev_02] and [^ev_01]", evidenceUsed: ["ev_02", "ev_01"] });
+    expect(numberEvidenceMarkers(parsed!.display)).toEqual({ display: "Claim [1] and [2]", ids: ["ev_02", "ev_01"] });
   });
 });

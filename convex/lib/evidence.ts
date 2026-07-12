@@ -103,6 +103,35 @@ export function evidenceIdsInAnswer(answer: string): string[] {
   return [...answer.matchAll(/\[\^((?:ev_)[A-Za-z0-9_-]+)\]/g)].map((match) => match[1]);
 }
 
+const EVIDENCE_USED_RE = /\n?\s*\{\s*"evidence_used"\s*:\s*(\[[^\]]*\])\s*\}\s*$/;
+
+/** Pull the required final protocol line off the user-visible answer. */
+export function extractEvidenceUsedBlock(raw: string): { display: string; evidenceUsed: string[] } | null {
+  const match = raw.match(EVIDENCE_USED_RE);
+  if (!match) return null;
+  try {
+    const parsed = JSON.parse(match[1]);
+    if (!Array.isArray(parsed) || parsed.some((id) => typeof id !== "string")) return null;
+    return { display: raw.slice(0, match.index).trimEnd(), evidenceUsed: parsed };
+  } catch {
+    return null;
+  }
+}
+
+/** Convert internal markers to stable display numbers in order of first use. */
+export function numberEvidenceMarkers(answer: string): { display: string; ids: string[] } {
+  const ids: string[] = [];
+  const display = answer.replace(/\[\^((?:ev_)[A-Za-z0-9_-]+)\]/g, (_match, id: string) => {
+    let index = ids.indexOf(id);
+    if (index === -1) {
+      ids.push(id);
+      index = ids.length - 1;
+    }
+    return `[${index + 1}]`;
+  });
+  return { display, ids };
+}
+
 /** Extract direct quotes paired immediately with their evidence marker. */
 export function citedQuotesInAnswer(answer: string): Array<{ quote: string; id?: string }> {
   const matches = answer.matchAll(/["“]([^"”]{1,500})["”]\s*(?:\[\^((?:ev_)[A-Za-z0-9_-]+)\])?/g);
