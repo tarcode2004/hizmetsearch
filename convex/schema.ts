@@ -51,6 +51,11 @@ export default defineSchema({
           timestamp_start: v.optional(v.number()),
           timestamp_end: v.optional(v.number()),
           score: v.optional(v.number()),
+          /** Research-agent locator: inclusive passage-ordering range within
+           *  the work (doc_id) this citation points at. Set by the Sonnet 5
+           *  tool loop; absent on classic retrieval sources. */
+          passage_start: v.optional(v.number()),
+          passage_end: v.optional(v.number()),
         })
       )
     ),
@@ -73,8 +78,29 @@ export default defineSchema({
     /** Live status string updated mid-stream while the agent is
      *  searching/thinking. Cleared on finalize. */
     agenticStatus: v.optional(v.string()),
+    /** Research agent (Sonnet 5 tool loop): one entry per executed tool
+     *  call. Replaces `agenticSteps` for new agentic messages — the old
+     *  field stays for historical planner-mode messages and its renderer. */
+    researchSteps: v.optional(
+      v.array(
+        v.object({
+          tool: v.string(),
+          inputSummary: v.string(),
+          resultCount: v.optional(v.number()),
+          elapsedMs: v.optional(v.number()),
+          isError: v.optional(v.boolean()),
+          ts: v.number(),
+        }),
+      ),
+    ),
+    /** Live one-line status while the research agent is working
+     *  (e.g. "Reading Sözler…"). Cleared on finalize. */
+    researchStatus: v.optional(v.string()),
     createdAt: v.number(),
-  }).index("by_conversation", ["conversationId", "createdAt"]),
+  })
+    .index("by_conversation", ["conversationId", "createdAt"])
+    // Watchdog cron: sweep messages stuck in isStreaming=true.
+    .index("by_streaming", ["isStreaming", "createdAt"]),
 
   /**
    * Ephemeral row that backs progressive (streaming) search renders.

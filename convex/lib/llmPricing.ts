@@ -21,7 +21,11 @@ interface ModelPrice {
 }
 
 const PRICING: Record<string, ModelPrice> = {
-  // ── Anthropic Claude (current 4.6 generation) ────────────────
+  // ── Anthropic Claude ─────────────────────────────────────────
+  // Sonnet 5 — research agent loop model. Full (non-intro) price so
+  // the cost model stays correct after the intro window ends 2026-08-31.
+  "claude-sonnet-5": { input: 3, output: 15 },
+  // Current 4.6 generation
   "claude-opus-4-6": { input: 5, output: 25 },
   "claude-sonnet-4-6": { input: 3, output: 15 },
   "claude-haiku-4-5": { input: 1, output: 5 },

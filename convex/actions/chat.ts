@@ -1,20 +1,31 @@
 /**
  * Chat action — RAG retrieval + LLM streaming.
  *
- * Flow:
+ * Two modes:
+ *
+ *  PLAIN (default):
  *   1. Verify user, save user message
  *   2. Create assistant placeholder (isStreaming: true)
- *   3. Retrieve sources via FastAPI /api/search
- *   4. Stream LLM response from Anthropic (Claude) or Google GenAI (Gemini),
- *      patching the assistant message after each chunk so the web client's
- *      reactive query updates in real time
+ *   3. Retrieve sources via FastAPI /api/search (single-shot)
+ *   4. Stream LLM response from Anthropic (Claude) or Google GenAI
+ *      (Gemini), patching the assistant message after each chunk so the
+ *      web client's reactive query updates in real time
  *   5. Finalize message with sources + tracked token usage
+ *
+ *  AGENTIC (args.agentic — "Deep research"):
+ *   A Claude Sonnet 5 tool loop over the five corpus tools on the
+ *   Hetzner tool server (search_corpus / search_text / list_works /
+ *   get_work_outline / read_document). The loop streams a per-round
+ *   research timeline into `messages.researchSteps`, then streams the
+ *   final synthesis into `content` and emits model-selected citations
+ *   into `sources`. Replaces the old Gemini-Flash-Lite planner mode
+ *   (whose `agenticSteps` field remains only for historical messages).
  *
  * BYOK: if the user has saved their own API key in `apiKeys` and `isActive`,
  *       it overrides the platform-wide env key for the chosen model.
  */
 "use node";
-import { action, type ActionCtx } from "../_generated/server";
+import { action, internalAction, type ActionCtx } from "../_generated/server";
 import { v } from "convex/values";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
@@ -26,27 +37,24 @@ import {
   buildChatClaudePrompt,
   buildChatClaudeLeanPrompt,
   toAnthropicMessages,
+  RESEARCH_AGENT_SYSTEM,
   type SourceContext,
 } from "../lib/prompts";
+import {
+  RESEARCH_TOOLS,
+  executeResearchTool,
+  summarizeToolInput,
+  type DocRegistry,
+} from "../lib/agentTools";
 import { DAILY_LIMITS } from "../lib/planLimits";
 import { resolveModelId } from "../lib/modelCatalog";
 import { captureGeneration } from "../lib/llmAnalytics";
 
 const MAX_HISTORY = 10;
-// Conservative output cap. Chat replies almost never need more than 1k
-// tokens; capping here protects against runaway generations on a stuck
-// stream and aligns with Sonnet's pricing curve. Bumped for agentic
-// mode where the synthesis step has 30+ sources to weave together.
+// Conservative output cap for plain chat. Chat replies almost never need
+// more than 1k tokens; capping here protects against runaway generations
+// on a stuck stream and aligns with Sonnet's pricing curve.
 const CLAUDE_MAX_TOKENS = 1024;
-const CLAUDE_MAX_TOKENS_AGENTIC = 2048;
-// Agentic mode caps. The planner is a cheap Gemini Flash Lite call that
-// chooses follow-up queries; the round budget is the hard ceiling on
-// total search calls (≈ retrieval cost), and the source budget is the
-// cap on the number of distinct chunks we'll feed into the synthesis.
-const AGENTIC_MAX_ROUNDS = 6;
-const AGENTIC_MAX_SOURCES = 36;
-const AGENTIC_TOP_K = 8;
-const AGENTIC_PLANNER_MODEL = "gemini-2.5-flash-lite";
 const LLM_RETRY_ATTEMPTS = 2; // 1 initial try + up to 2 retries on transient errors
 // Stream flush throttle. We patch the streaming message at most once per
 // MIN_FLUSH_INTERVAL_MS milliseconds, with an additional minimum of
@@ -56,6 +64,22 @@ const LLM_RETRY_ATTEMPTS = 2; // 1 initial try + up to 2 retries on transient er
 const STREAM_FLUSH_CHARS = 32;
 const MIN_FLUSH_INTERVAL_MS = 80;
 
+// ── Research agent (Sonnet 5 tool loop) caps ─────────────────────────
+// The loop model is fixed regardless of the user's variant pick — the
+// research loop is tuned (prompt, tools, caching) for Sonnet 5.
+const RESEARCH_MODEL = "claude-sonnet-5";
+// Thinking + text share max_tokens on Sonnet 5 (adaptive thinking is on
+// by default); 2048 would truncate syntheses mid-thought.
+const RESEARCH_MAX_TOKENS = 16_000;
+// Hard ceiling on executed tool calls per answer.
+const RESEARCH_MAX_TOOL_CALLS = 16;
+// Wall-clock budget. Convex node actions hard-cap at 10 minutes with no
+// retry; past this budget we inject a user-turn instruction to synthesize
+// with what the model already has.
+const RESEARCH_WALL_CLOCK_MS = 6.5 * 60 * 1000;
+// Safety cap on API rounds (a round may contain several parallel calls).
+const RESEARCH_MAX_ROUNDS = 20;
+
 export const sendMessage = action({
   args: {
     conversationId: v.id("conversations"),
@@ -64,10 +88,10 @@ export const sendMessage = action({
     /** Optional specific variant within the family (e.g. "claude-opus-4-5",
      *  "gemini-2.5-flash-lite"). Falls back to the family default. */
     modelVariant: v.optional(v.string()),
-    /** Deep-search mode. When true the action runs a multi-round
-     *  retrieval loop driven by a cheap planner LLM, gathering up to
-     *  AGENTIC_MAX_SOURCES distinct chunks across AGENTIC_MAX_ROUNDS
-     *  search calls before handing the bundle to the main model. */
+    /** Deep-research mode. When true the action runs the Claude Sonnet 5
+     *  tool loop over the corpus tools (regardless of the selected model
+     *  family — the loop model is always Sonnet 5, and usage counts
+     *  against the Claude budget). */
     agentic: v.optional(v.boolean()),
   },
   handler: async (ctx, args): Promise<Id<"messages">> => {
@@ -77,6 +101,12 @@ export const sendMessage = action({
     const me: any = await ctx.runQuery(api.users.me, {});
     if (!me) throw new Error("Not authenticated");
 
+    // Deep research always runs on Claude — budget, BYOK, and usage
+    // tracking follow the model that actually executes.
+    const effectiveFamily: "gemini" | "claude" = args.agentic
+      ? "claude"
+      : args.model;
+
     // 1b. Server-side budget enforcement — refuse if the user is out of
     //     tokens AND has no BYOK key for the chosen model. The web also
     //     checks this, but we re-verify here so a malicious client cannot
@@ -84,7 +114,7 @@ export const sendMessage = action({
     const sub = me.subscription;
     const byokActive = me.byokActive;
     if (!byokActive && sub) {
-      const isClaude = args.model === "claude";
+      const isClaude = effectiveFamily === "claude";
       const used = isClaude ? sub.claudeTokensUsed : sub.geminiTokensUsed;
       const limit = isClaude ? sub.claudeTokensLimit : sub.geminiTokensLimit;
       const credit = isClaude
@@ -92,7 +122,7 @@ export const sendMessage = action({
         : sub.geminiCreditTokens ?? 0;
       if (used >= limit && credit <= 0) {
         throw new Error(
-          `Token budget exhausted for ${args.model}. Upgrade your plan, buy a credit pack, or add your own API key in Settings.`
+          `Token budget exhausted for ${effectiveFamily}. Upgrade your plan, buy a credit pack, or add your own API key in Settings.`
         );
       }
 
@@ -110,14 +140,17 @@ export const sendMessage = action({
         // counter on the next call.
         if (Date.now() < dayResetAt && todayUsed >= dayCap && credit <= 0) {
           throw new Error(
-            `Daily token cap reached for ${args.model}. Resets in a few hours, or buy a credit pack / use your own API key.`
+            `Daily token cap reached for ${effectiveFamily}. Resets in a few hours, or buy a credit pack / use your own API key.`
           );
         }
       }
     }
 
-    // Resolve the user's variant pick to an actual SDK model id.
-    const resolvedModelId = resolveModelId(args.model, args.modelVariant);
+    // Resolve the user's variant pick to an actual SDK model id. The
+    // research loop ignores the variant — it is tuned for Sonnet 5.
+    const resolvedModelId = args.agentic
+      ? RESEARCH_MODEL
+      : resolveModelId(args.model, args.modelVariant);
 
     // 2. Save user message
     await ctx.runMutation(internal.mutations.messages.create, {
@@ -136,13 +169,80 @@ export const sendMessage = action({
         conversationId: args.conversationId,
         role: "assistant",
         content: "",
-        model: args.model,
+        model: effectiveFamily,
         modelVariant: resolvedModelId,
         isStreaming: true,
       }
     );
 
     try {
+      // ─── Agentic deep-research path (Sonnet 5 tool loop) ───────
+      if (args.agentic) {
+        const byokKey = await resolveByokKey(ctx, me._id, "claude");
+        const apiKey = byokKey ?? process.env.ANTHROPIC_API_KEY;
+        if (!apiKey) throw new Error("Anthropic API key not configured");
+
+        const history = await loadConversationHistory(ctx, args.conversationId);
+        const llmStart = Date.now();
+        const result = await runResearchAgent({
+          ctx,
+          assistantMsgId,
+          apiKey,
+          question: args.content,
+          history,
+        });
+
+        captureGeneration({
+          distinctId: me._id as string,
+          traceId: assistantMsgId as string,
+          model: RESEARCH_MODEL,
+          latencySeconds: (Date.now() - llmStart) / 1000,
+          inputTokens: result.usage.inputTokens,
+          outputTokens: result.usage.outputTokens,
+          input: [{ role: "user", content: args.content }],
+          output: result.content,
+          properties: {
+            source: "chat",
+            model_family: "claude",
+            model_variant: RESEARCH_MODEL,
+            conversation_id: args.conversationId as string,
+            agentic: true,
+            byok: !!byokKey,
+            source_count: result.sources.length,
+            tool_calls: result.usage.toolCalls,
+            loop_rounds: result.usage.rounds,
+            cache_read_tokens: result.usage.cacheReadTokens,
+            cache_creation_tokens: result.usage.cacheCreationTokens,
+            plan: me.subscription?.plan ?? null,
+          },
+        });
+
+        await ctx.runMutation(internal.mutations.messages.finalize, {
+          messageId: assistantMsgId,
+          content: result.content,
+          sources: result.sources,
+        });
+
+        // Track token usage across ALL loop rounds (skip when BYOK).
+        // inputTokens already includes cache reads/writes at face value;
+        // T6 owns re-weighting quotas for cached tokens.
+        if (
+          !byokKey &&
+          (result.usage.inputTokens || result.usage.outputTokens)
+        ) {
+          await ctx.runMutation(internal.mutations.usage.trackUsage, {
+            userId: me._id,
+            model: "claude",
+            tokensConsumed:
+              result.usage.inputTokens + result.usage.outputTokens,
+          });
+        }
+
+        return assistantMsgId;
+      }
+
+      // ─── Plain single-shot path ────────────────────────────────
+      //
       // 4. Retrieve sources from RAG API.
       //
       //    Graceful degradation: if the FastAPI service is unreachable
@@ -156,242 +256,37 @@ export const sendMessage = action({
         chunk: Record<string, unknown>;
         score: number;
       }> = [];
-      let agenticSteps:
-        | Array<{ query: string; resultCount: number; reasoning?: string }>
-        | undefined;
 
-      if (args.agentic) {
-        // ─── Agentic deep-search loop ────────────────────────────
-        //
-        // Round 1 always runs the user query as-is. Subsequent rounds
-        // ask a cheap planner LLM to look at what we already retrieved
-        // and choose 1-3 follow-up queries that fill in gaps. We dedupe
-        // sources across rounds by chunk_id and stop early when the
-        // planner says we're done or we hit the source budget.
-        const plannerKey = process.env.GEMINI_API_KEY;
-        const plannerClient = plannerKey ? new GoogleGenAI({ apiKey: plannerKey }) : null;
-        const sourceById = new Map<string, { chunk: Record<string, unknown>; score: number }>();
-        const stepsAcc: Array<{ query: string; resultCount: number; reasoning?: string }> = [];
-        const queriesTried = new Set<string>();
-
-        const runOneSearch = async (q: string): Promise<number> => {
-          try {
-            const r = await fetch(`${ragUrl}/api/search`, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                ...(ragKey ? { "X-API-Key": ragKey } : {}),
-              },
-              body: JSON.stringify({
-                query: q,
-                top_k: AGENTIC_TOP_K,
-                use_reranker: true,
-              }),
-            });
-            if (!r.ok) return 0;
-            const json = await r.json();
-            const results = (json.results ?? []) as Array<{
-              chunk: Record<string, unknown>;
-              score: number;
-            }>;
-            let added = 0;
-            for (const item of results) {
-              const id = String(item.chunk.chunk_id ?? "");
-              if (!id || sourceById.has(id)) continue;
-              sourceById.set(id, item);
-              added++;
-              if (sourceById.size >= AGENTIC_MAX_SOURCES) break;
-            }
-            return added;
-          } catch (e) {
-            console.warn("agentic search call failed:", e);
-            return 0;
-          }
-        };
-
-        const patchProgress = async (status: string) => {
-          try {
-            await ctx.runMutation(internal.mutations.messages.updateAgenticProgress, {
-              messageId: assistantMsgId,
-              agenticStatus: status,
-              agenticSteps: stepsAcc,
-            });
-          } catch (e) {
-            console.warn("agentic progress patch failed:", e);
-          }
-        };
-
-        // Round 1 — search the user query verbatim. The corpus is ~95%
-        // Turkish, so for non-Turkish questions we ALSO immediately
-        // search the Turkish translation. Without this step, an English
-        // question like "Why is salah important" misses the bulk of the
-        // namaz material because none of those chunks contain the word
-        // "salah" verbatim.
-        await patchProgress(`Searching: ${args.content}`);
-        const r1 = await runOneSearch(args.content);
-        queriesTried.add(args.content.toLowerCase());
-        stepsAcc.push({ query: args.content, resultCount: r1 });
-
-        if (plannerClient && !looksTurkish(args.content)) {
-          const tr = await translateToTurkish(plannerClient, args.content);
-          if (tr && !queriesTried.has(tr.toLowerCase())) {
-            queriesTried.add(tr.toLowerCase());
-            await patchProgress(`Searching (TR): ${tr}`);
-            const added = await runOneSearch(tr);
-            stepsAcc.push({
-              query: tr,
-              resultCount: added,
-              reasoning:
-                "Translated the question to Turkish — the corpus is overwhelmingly Turkish.",
-            });
-          }
-        }
-
-        await patchProgress(`Found ${sourceById.size} sources so far. Planning next searches…`);
-
-        // Rounds 2..N — planner-driven.
-        for (let round = 2; round <= AGENTIC_MAX_ROUNDS; round++) {
-          if (sourceById.size >= AGENTIC_MAX_SOURCES) break;
-          if (!plannerClient) break;
-          const plan = await runPlanner(
-            plannerClient,
-            args.content,
-            stepsAcc,
-            Array.from(sourceById.values()).slice(-12),
-            AGENTIC_MAX_ROUNDS - round + 1,
+      try {
+        const ragResponse = await fetch(`${ragUrl}/api/search`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(ragKey ? { "X-API-Key": ragKey } : {}),
+          },
+          body: JSON.stringify({
+            query: args.content,
+            top_k: 6,
+            use_reranker: true,
+          }),
+        });
+        if (ragResponse.ok) {
+          const search = await ragResponse.json();
+          rawSources = (search.results ?? []) as Array<{
+            chunk: Record<string, unknown>;
+            score: number;
+          }>;
+        } else {
+          console.warn(
+            `RAG API returned ${ragResponse.status}; proceeding without sources`
           );
-          if (plan.done || plan.queries.length === 0) break;
-          // Filter out queries we already ran (case-insensitive).
-          const fresh = plan.queries.filter(
-            (q) => q && !queriesTried.has(q.toLowerCase()),
-          );
-          if (fresh.length === 0) break;
-          // Attach the planner's rationale only to the FIRST new query of
-          // the round — the same reasoning string applies to all queries
-          // the planner returned together, so repeating it on every row
-          // is just visual noise.
-          let reasoningAttached = false;
-          for (const q of fresh) {
-            if (sourceById.size >= AGENTIC_MAX_SOURCES) break;
-            queriesTried.add(q.toLowerCase());
-            await patchProgress(`Searching: ${q}`);
-            const added = await runOneSearch(q);
-            stepsAcc.push({
-              query: q,
-              resultCount: added,
-              reasoning: reasoningAttached ? undefined : plan.reasoning,
-            });
-            reasoningAttached = true;
-            await patchProgress(`Found ${sourceById.size} sources so far.`);
-          }
         }
-
-        await patchProgress(
-          `Synthesizing answer from ${sourceById.size} sources across ${stepsAcc.length} searches…`,
-        );
-
-        rawSources = Array.from(sourceById.values());
-        agenticSteps = stepsAcc;
-      } else {
-        // ─── Plain single-shot retrieval (original path) ─────────
-        try {
-          const ragResponse = await fetch(`${ragUrl}/api/search`, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-              ...(ragKey ? { "X-API-Key": ragKey } : {}),
-            },
-            body: JSON.stringify({
-              query: args.content,
-              top_k: 6,
-              use_reranker: true,
-            }),
-          });
-          if (ragResponse.ok) {
-            const search = await ragResponse.json();
-            rawSources = (search.results ?? []) as Array<{
-              chunk: Record<string, unknown>;
-              score: number;
-            }>;
-          } else {
-            console.warn(
-              `RAG API returned ${ragResponse.status}; proceeding without sources`
-            );
-          }
-        } catch (ragErr) {
-          console.warn("RAG API unreachable; proceeding without sources:", ragErr);
-        }
+      } catch (ragErr) {
+        console.warn("RAG API unreachable; proceeding without sources:", ragErr);
       }
 
-      // 5. Load prior conversation history. We pull the full message
-      // doc (not just role+content) so we can re-attach each prior
-      // assistant turn's sources — without this, the LLM is blind to
-      // source [N] references the user might make about prior answers,
-      // and switching models mid-conversation loses citation continuity.
-      //
-      // Token-budget tradeoff: the LAST 2 assistant turns get FULL
-      // chunk text inlined (so the model can quote/discuss them);
-      // older turns get a title-only legend (so the model knows what
-      // [N] referred to without paying the full text cost).
-      const historyDocs = (await ctx.runQuery(api.queries.messages.byConversation, {
-        conversationId: args.conversationId,
-      })) as Array<{
-        role: string;
-        content: string;
-        sources?: Array<{
-          title?: string;
-          author_speaker?: string;
-          text?: string;
-          chapter_section?: string;
-        }>;
-      }>;
-      // Find which assistant turns are "recent enough" to deserve full
-      // text. We walk backwards and mark the last 2 we see.
-      const recentAssistantIdx = new Set<number>();
-      {
-        let seen = 0;
-        for (let i = historyDocs.length - 1; i >= 0 && seen < 2; i--) {
-          if (historyDocs[i].role === "assistant" && historyDocs[i].sources?.length) {
-            recentAssistantIdx.add(i);
-            seen++;
-          }
-        }
-      }
-      const history = historyDocs.map((m, idx) => {
-        if (m.role !== "assistant" || !m.sources || m.sources.length === 0) {
-          return { role: m.role, content: m.content };
-        }
-        if (recentAssistantIdx.has(idx)) {
-          // Full inline — the model can re-quote these.
-          const block = m.sources
-            .slice(0, 36)
-            .map((s, i) => {
-              const head = `[${i + 1}] ${(s.title ?? "").slice(0, 100)}${
-                s.author_speaker ? " — " + s.author_speaker.slice(0, 60) : ""
-              }${s.chapter_section ? " · " + s.chapter_section.slice(0, 80) : ""}`;
-              const body = (s.text ?? "").slice(0, 1200);
-              return `${head}\n${body}`;
-            })
-            .join("\n\n");
-          return {
-            role: m.role,
-            content: `${m.content}\n\n--- SOURCES FROM THIS TURN ---\n${block}\n--- END SOURCES ---`,
-          };
-        }
-        // Older turn — title-only legend keeps citation references
-        // resolvable without flooding the context window.
-        const legend = m.sources
-          .slice(0, 36)
-          .map(
-            (s, i) =>
-              `[${i + 1}] ${(s.title ?? "").slice(0, 80)}${s.author_speaker ? " — " + s.author_speaker.slice(0, 60) : ""}`,
-          )
-          .join("\n");
-        return {
-          role: m.role,
-          content: `${m.content}\n\n(Sources from this turn:\n${legend})`,
-        };
-      });
+      // 5. Load prior conversation history (see loadConversationHistory).
+      const history = await loadConversationHistory(ctx, args.conversationId);
 
       // 6. Build the LLM prompt
       const sourceContexts: SourceContext[] = rawSources.map((r, i) => ({
@@ -414,20 +309,7 @@ export const sendMessage = action({
       // cache prefix would otherwise dwarf their actual query.
       const hasSources = sourceContexts.length > 0;
 
-      // Detect the user's language from THIS turn (not the conversation
-      // history, not the sources). The model otherwise drifts toward
-      // Turkish on every reply because the corpus and most history are
-      // Turkish. We override that drift with an explicit instruction
-      // wrapped around the user query.
-      const detectedLang = detectReplyLanguage(args.content);
-      const languageDirective =
-        `[SYSTEM: The user just wrote in ${detectedLang.label}. ` +
-        `You MUST write your ENTIRE reply in ${detectedLang.label}. ` +
-        `Do NOT switch to Turkish, Arabic, or any other language even ` +
-        `though the source passages are mostly Turkish. Translate any ` +
-        `quoted source material into ${detectedLang.label}, but keep ` +
-        `the original Turkish/Arabic phrase in parentheses or as a ` +
-        `parenthetical when a key term is untranslatable.]\n\n`;
+      const languageDirective = buildLanguageDirective(args.content);
 
       const promptOpts = {
         sources: sourceContexts,
@@ -477,7 +359,7 @@ export const sendMessage = action({
         const stream = await withLLMRetry(() =>
           client.messages.stream({
             model: resolvedModelId,
-            max_tokens: args.agentic ? CLAUDE_MAX_TOKENS_AGENTIC : CLAUDE_MAX_TOKENS,
+            max_tokens: CLAUDE_MAX_TOKENS,
             messages: toAnthropicMessages(prompt),
           })
         );
@@ -536,7 +418,7 @@ export const sendMessage = action({
           model_family: args.model,
           model_variant: args.modelVariant ?? null,
           conversation_id: args.conversationId as string,
-          agentic: !!args.agentic,
+          agentic: false,
           byok: !!byokKey,
           source_count: rawSources.length,
           plan: me.subscription?.plan ?? null,
@@ -549,15 +431,13 @@ export const sendMessage = action({
       // schema uses `v.optional(v.number())` which only accepts undefined
       // (or absent), NOT null. Coerce null → undefined before saving.
       //
-      // SIZE GUARD: Convex caps documents at 1 MiB. The agentic path can
-      // collect up to ~36 sources, and many chunks (especially Risale-i Nur
-      // sections) have a `parent_text` of several KB. Together that easily
-      // pushes the message past the limit. We always drop parent_text and
-      // truncate `text` to a hard cap; the full chunk is still reachable
-      // via the source viewer link.
+      // SIZE GUARD: Convex caps documents at 1 MiB. Many chunks (especially
+      // Risale-i Nur sections) have a `parent_text` of several KB. We always
+      // drop parent_text and truncate `text` to a hard cap; the full chunk
+      // is still reachable via the source viewer link.
       const num = (v: unknown): number | undefined =>
         typeof v === "number" ? v : undefined;
-      const TEXT_CAP = args.agentic ? 1200 : 4000;
+      const TEXT_CAP = 4000;
       const truncate = (s: string) =>
         s.length > TEXT_CAP ? s.slice(0, TEXT_CAP) + "…" : s;
       const sourcePayload = rawSources.map((r) => ({
@@ -587,18 +467,6 @@ export const sendMessage = action({
         sources: sourcePayload,
       });
 
-      // Persist the agentic plan alongside the final answer. We do this
-      // as a separate patch (rather than threading it through finalize)
-      // so the change stays localized: finalize is shared with the
-      // single-shot path and we don't want to bloat its arg surface.
-      if (agenticSteps && agenticSteps.length > 0) {
-        await ctx.runMutation(internal.mutations.messages.updateAgenticProgress, {
-          messageId: assistantMsgId,
-          agenticSteps,
-          agenticStatus: undefined,
-        });
-      }
-
       // 10. Track token usage (skip when BYOK is active)
       if (!byokKey && (inputTokens || outputTokens)) {
         await ctx.runMutation(internal.mutations.usage.trackUsage, {
@@ -627,7 +495,7 @@ export const sendMessage = action({
         errorMessage: error instanceof Error ? error.message : String(error),
         properties: {
           source: "chat",
-          model_family: args.model,
+          model_family: effectiveFamily,
           model_variant: args.modelVariant ?? null,
           conversation_id: args.conversationId as string,
           agentic: !!args.agentic,
@@ -644,6 +512,651 @@ export const sendMessage = action({
     }
   },
 });
+
+// ── Research agent loop ────────────────────────────────────────────────
+
+interface ResearchStep {
+  tool: string;
+  inputSummary: string;
+  resultCount?: number;
+  elapsedMs?: number;
+  isError?: boolean;
+  ts: number;
+}
+
+interface ResearchUsage {
+  /** Total prompt tokens across all rounds — uncached + cache writes +
+   *  cache reads, at face value (T6 owns re-weighting cached tokens). */
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  rounds: number;
+  toolCalls: number;
+}
+
+type ResearchSourcePayload = {
+  chunk_id: string;
+  doc_id: string;
+  text: string;
+  source_type: string;
+  language: string;
+  collection: string;
+  title: string;
+  author_speaker: string;
+  publisher: string;
+  chapter_section: string;
+  page_number?: number;
+  timestamp_start?: number;
+  timestamp_end?: number;
+  passage_start?: number;
+  passage_end?: number;
+};
+
+interface ResearchResult {
+  content: string;
+  sources: ResearchSourcePayload[];
+  steps: ResearchStep[];
+  usage: ResearchUsage;
+}
+
+/**
+ * Run the Claude Sonnet 5 tool loop for one question.
+ *
+ * Loop mechanics (per the agentic-retrieval tech plan):
+ *  - adaptive thinking on by default (no `thinking` param), no sampling
+ *    params (400 on Sonnet 5), max_tokens 16K shared by thinking + text;
+ *  - prompt caching: one breakpoint on the last system block (system +
+ *    tools cached together — both byte-stable) and a moving breakpoint on
+ *    the last content block of the latest appended message;
+ *  - caps: RESEARCH_MAX_TOOL_CALLS executed tool calls or
+ *    RESEARCH_WALL_CLOCK_MS, after which a user-turn note instructs the
+ *    model to synthesize with what it has;
+ *  - tool errors come back as is_error tool_results (never dropped); all
+ *    results of a parallel round go back in ONE user message;
+ *  - per-round usage (incl. cache split) is logged and summed.
+ *
+ * `simulateCrashAfterRound` is a test hook (see researchLoopTest): the
+ * loop throws after N completed rounds so the watchdog cron path can be
+ * exercised deterministically.
+ */
+async function runResearchAgent(opts: {
+  ctx: ActionCtx;
+  assistantMsgId: Id<"messages">;
+  apiKey: string;
+  question: string;
+  history: Array<{ role: string; content: string }>;
+  simulateCrashAfterRound?: number;
+}): Promise<ResearchResult> {
+  const { ctx, assistantMsgId, question } = opts;
+  const ragUrl = process.env.RAG_API_URL ?? "http://localhost:8000";
+  const ragKey = process.env.RAG_API_KEY ?? "";
+  const client = new Anthropic({ apiKey: opts.apiKey });
+  const startedAt = Date.now();
+
+  // ── Conversation state ──
+  const registry: DocRegistry = new Map();
+  const steps: ResearchStep[] = [];
+  const usage: ResearchUsage = {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreationTokens: 0,
+    rounds: 0,
+    toolCalls: 0,
+  };
+
+  const system: Anthropic.TextBlockParam[] = [
+    {
+      type: "text",
+      text: RESEARCH_AGENT_SYSTEM,
+      cache_control: { type: "ephemeral" },
+    },
+  ];
+
+  const messages: Anthropic.MessageParam[] = [];
+  for (const m of opts.history) {
+    if (m.role !== "user" && m.role !== "assistant") continue;
+    if (!m.content.trim()) continue;
+    messages.push({ role: m.role, content: m.content });
+  }
+  // Drop the just-saved copy of the current user turn (it is re-added
+  // below with the language directive), and any leading assistant turns
+  // (Anthropic requires the first message to be from the user).
+  while (
+    messages.length > 0 &&
+    messages[messages.length - 1].role === "user" &&
+    messages[messages.length - 1].content === question
+  ) {
+    messages.pop();
+  }
+  while (messages.length > 0 && messages[0].role === "assistant") {
+    messages.shift();
+  }
+  messages.push({
+    role: "user",
+    content: [{ type: "text", text: buildLanguageDirective(question) + question }],
+  });
+
+  // Moving cache breakpoint: strip any previous marker from message
+  // blocks, then mark the last block of the latest message. Combined
+  // with the system-block marker that's 2 of the 4 allowed breakpoints.
+  const setMovingCacheBreakpoint = () => {
+    for (const m of messages) {
+      if (!Array.isArray(m.content)) continue;
+      for (const b of m.content) {
+        if (b && typeof b === "object" && "cache_control" in b) {
+          delete (b as { cache_control?: unknown }).cache_control;
+        }
+      }
+    }
+    const last = messages[messages.length - 1];
+    if (last && Array.isArray(last.content) && last.content.length > 0) {
+      const block = last.content[last.content.length - 1] as {
+        type?: string;
+        cache_control?: { type: "ephemeral" };
+      };
+      // Text and tool_result blocks are cacheable; thinking blocks are not.
+      if (block.type === "text" || block.type === "tool_result") {
+        block.cache_control = { type: "ephemeral" };
+      }
+    }
+  };
+
+  // ── Streaming content flush (throttled, hides the <sources> block) ──
+  let accumulated = "";
+  let lastFlushLen = 0;
+  let lastFlushTime = 0;
+  const flushContent = async (force = false) => {
+    const visible = stripSourcesBlock(accumulated);
+    const now = Date.now();
+    if (!force) {
+      if (visible.length - lastFlushLen < STREAM_FLUSH_CHARS) return;
+      if (now - lastFlushTime < MIN_FLUSH_INTERVAL_MS) return;
+    }
+    lastFlushLen = visible.length;
+    lastFlushTime = now;
+    await ctx.runMutation(internal.mutations.messages.updateContent, {
+      messageId: assistantMsgId,
+      content: visible,
+    });
+  };
+
+  const patchProgress = async (status?: string) => {
+    try {
+      await ctx.runMutation(internal.mutations.messages.updateResearchProgress, {
+        messageId: assistantMsgId,
+        researchStatus: status ?? "",
+        researchSteps: steps,
+      });
+    } catch (e) {
+      console.warn("research progress patch failed:", e);
+    }
+  };
+
+  await patchProgress("Researching…");
+
+  let budgetNoteInjected = false;
+  let finalText = "";
+
+  for (let round = 1; round <= RESEARCH_MAX_ROUNDS; round++) {
+    setMovingCacheBreakpoint();
+
+    const stream = await withLLMRetry(() =>
+      client.messages.stream({
+        model: RESEARCH_MODEL,
+        max_tokens: RESEARCH_MAX_TOKENS,
+        system,
+        tools: RESEARCH_TOOLS,
+        messages,
+      })
+    );
+
+    // Stream this round's text. Intermediate rounds may narrate briefly;
+    // each round replaces the visible content, so the final synthesis
+    // ends up as the message body.
+    accumulated = "";
+    lastFlushLen = 0;
+    for await (const event of stream) {
+      if (
+        event.type === "content_block_delta" &&
+        event.delta.type === "text_delta"
+      ) {
+        accumulated += event.delta.text;
+        await flushContent();
+      }
+    }
+    const final = await stream.finalMessage();
+
+    usage.rounds = round;
+    usage.inputTokens +=
+      final.usage.input_tokens +
+      (final.usage.cache_creation_input_tokens ?? 0) +
+      (final.usage.cache_read_input_tokens ?? 0);
+    usage.outputTokens += final.usage.output_tokens;
+    usage.cacheReadTokens += final.usage.cache_read_input_tokens ?? 0;
+    usage.cacheCreationTokens += final.usage.cache_creation_input_tokens ?? 0;
+    console.log(
+      `research round ${round}: stop=${final.stop_reason} ` +
+        `in=${final.usage.input_tokens} out=${final.usage.output_tokens} ` +
+        `cache_read=${final.usage.cache_read_input_tokens ?? 0} ` +
+        `cache_write=${final.usage.cache_creation_input_tokens ?? 0} ` +
+        `tool_calls_used=${usage.toolCalls} elapsed_ms=${Date.now() - startedAt}`
+    );
+
+    if (final.stop_reason !== "tool_use") {
+      finalText = accumulated;
+      break;
+    }
+
+    const toolUses = final.content.filter(
+      (b): b is Anthropic.ToolUseBlock => b.type === "tool_use"
+    );
+    if (toolUses.length === 0) {
+      finalText = accumulated;
+      break;
+    }
+
+    // Echo the assistant turn back verbatim (thinking blocks included —
+    // required for multi-turn tool use on Sonnet 5).
+    messages.push({
+      role: "assistant",
+      content: final.content as unknown as Anthropic.ContentBlockParam[],
+    });
+
+    const budgetExhausted =
+      usage.toolCalls >= RESEARCH_MAX_TOOL_CALLS ||
+      Date.now() - startedAt >= RESEARCH_WALL_CLOCK_MS;
+
+    // Execute all of the round's calls in parallel; failed calls become
+    // is_error results, never dropped. Once the budget is exhausted the
+    // calls are refused (also as is_error results).
+    const executions = await Promise.all(
+      toolUses.map(async (tu) => {
+        const input = (tu.input ?? {}) as Record<string, unknown>;
+        const t0 = Date.now();
+        if (budgetExhausted) {
+          return {
+            tu,
+            input,
+            exec: {
+              resultText:
+                "Research budget exhausted — no more tool calls are allowed. Write your final answer now with the material already gathered.",
+              isError: true,
+            },
+            elapsedMs: 0,
+          };
+        }
+        const exec = await executeResearchTool(
+          ragUrl,
+          ragKey,
+          tu.name,
+          input,
+          registry
+        );
+        return { tu, input, exec, elapsedMs: Date.now() - t0 };
+      })
+    );
+
+    if (!budgetExhausted) usage.toolCalls += toolUses.length;
+
+    // Timeline: one entry per executed call, one patch per round.
+    let lastSummary = "";
+    for (const { tu, input, exec, elapsedMs } of executions) {
+      const inputSummary = summarizeToolInput(tu.name, input, registry);
+      lastSummary = `${tu.name}: ${inputSummary}`;
+      steps.push({
+        tool: tu.name,
+        inputSummary,
+        resultCount: "resultCount" in exec ? exec.resultCount : undefined,
+        elapsedMs,
+        isError: exec.isError || undefined,
+        ts: Date.now(),
+      });
+    }
+    await patchProgress(lastSummary);
+
+    const resultBlocks: Anthropic.ContentBlockParam[] = executions.map(
+      ({ tu, exec }) => ({
+        type: "tool_result" as const,
+        tool_use_id: tu.id,
+        content: exec.resultText,
+        ...(exec.isError ? { is_error: true } : {}),
+      })
+    );
+
+    const overBudgetNow =
+      usage.toolCalls >= RESEARCH_MAX_TOOL_CALLS ||
+      Date.now() - startedAt >= RESEARCH_WALL_CLOCK_MS;
+    if (overBudgetNow && !budgetNoteInjected) {
+      budgetNoteInjected = true;
+      resultBlocks.push({
+        type: "text",
+        text:
+          "[SYSTEM NOTE] The research budget (tool calls / wall-clock time) is now exhausted. " +
+          "Do NOT call any more tools. Write your final answer in the user's language using only the material you have already gathered, " +
+          "followed by the required <sources> block.",
+      });
+    }
+
+    messages.push({ role: "user", content: resultBlocks });
+
+    if (opts.simulateCrashAfterRound && round >= opts.simulateCrashAfterRound) {
+      throw new Error(
+        `Simulated mid-loop crash after round ${round} (test hook)`
+      );
+    }
+
+    if (round === RESEARCH_MAX_ROUNDS) {
+      // Safety cap hit without a natural stop — keep whatever narration
+      // we have rather than leaving the message empty.
+      finalText = accumulated;
+    }
+  }
+
+  await patchProgress("");
+
+  const { display, sources } = extractResearchSources(finalText, registry);
+  await ctx.runMutation(internal.mutations.messages.updateContent, {
+    messageId: assistantMsgId,
+    content: display,
+  });
+
+  console.log(
+    `research done: rounds=${usage.rounds} tool_calls=${usage.toolCalls} ` +
+      `in=${usage.inputTokens} out=${usage.outputTokens} ` +
+      `cache_read=${usage.cacheReadTokens} cache_write=${usage.cacheCreationTokens} ` +
+      `sources=${sources.length} elapsed_ms=${Date.now() - startedAt}`
+  );
+
+  return { content: display, sources, steps, usage };
+}
+
+/**
+ * Hide the machine-read `<sources>…</sources>` block (and any partially
+ * streamed prefix of its opening tag) from the user-visible content.
+ */
+function stripSourcesBlock(text: string): string {
+  const idx = text.indexOf("<sources>");
+  if (idx !== -1) return text.slice(0, idx).trimEnd();
+  // While streaming, the opening tag may be mid-flight — trim a trailing
+  // partial prefix like "<sou" so it never flashes in the UI.
+  const open = "<sources>";
+  for (let n = open.length - 1; n >= 1; n--) {
+    if (text.endsWith(open.slice(0, n))) return text.slice(0, -n).trimEnd();
+  }
+  return text;
+}
+
+/**
+ * Parse the model's final `<sources>` block into the persisted source
+ * payload, enriching each entry with tool-observed work metadata (the
+ * model is trusted for n/doc_id/locator/quote; title/author/collection
+ * come from the doc registry when available).
+ */
+function extractResearchSources(
+  raw: string,
+  registry: DocRegistry
+): { display: string; sources: ResearchSourcePayload[] } {
+  const display = stripSourcesBlock(raw);
+  const m = raw.match(/<sources>\s*([\s\S]*?)\s*<\/sources>/);
+  if (!m) return { display, sources: [] };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(m[1]);
+  } catch (e) {
+    console.warn("research sources block did not parse as JSON:", e);
+    return { display, sources: [] };
+  }
+  if (!Array.isArray(parsed)) return { display, sources: [] };
+
+  const entries = (parsed as Array<Record<string, unknown>>)
+    .filter((s) => s && typeof s === "object" && typeof s.doc_id === "string")
+    .sort((a, b) => Number(a.n ?? 0) - Number(b.n ?? 0));
+
+  const num = (v: unknown): number | undefined =>
+    typeof v === "number" && Number.isFinite(v) ? v : undefined;
+
+  const sources: ResearchSourcePayload[] = entries.map((s, i) => {
+    const docId = String(s.doc_id);
+    const meta = registry.get(docId);
+    const loc = (s.locator ?? {}) as Record<string, unknown>;
+    const passageStart = num(loc.passage_start);
+    const passageEnd = num(loc.passage_end) ?? passageStart;
+    const pageStart = num(loc.page_start);
+    const pageEnd = num(loc.page_end);
+    const tsStart = num(loc.timestamp_start);
+
+    // Human-readable locator for today's renderer (T5 reworks chips).
+    const locBits: string[] = [];
+    if (pageStart != null) {
+      locBits.push(pageEnd != null && pageEnd !== pageStart ? `s. ${pageStart}–${pageEnd}` : `s. ${pageStart}`);
+    }
+    if (passageStart != null) {
+      locBits.push(
+        passageEnd != null && passageEnd !== passageStart
+          ? `§${passageStart}–${passageEnd}`
+          : `§${passageStart}`
+      );
+    }
+
+    return {
+      chunk_id: `research:${docId}:${s.n ?? i + 1}`,
+      doc_id: docId,
+      text: String(s.quote ?? "").slice(0, 400),
+      source_type: meta?.source_type ?? "text",
+      language: meta?.language ?? "tr",
+      collection: meta?.collection ?? "",
+      title: String(meta?.title ?? s.title ?? "").slice(0, 200),
+      author_speaker: String(meta?.author_speaker ?? s.author ?? "").slice(0, 120),
+      publisher: (meta?.publisher ?? "").slice(0, 120),
+      chapter_section: locBits.join(" · ").slice(0, 200),
+      page_number: pageStart,
+      timestamp_start: tsStart,
+      passage_start: passageStart,
+      passage_end: passageEnd,
+    };
+  });
+
+  return { display, sources };
+}
+
+// ── Internal test harness ──────────────────────────────────────────────
+
+/**
+ * Headless E2E harness for the research loop (dev verification — see
+ * ticket T4). Bypasses Clerk auth and budget checks: creates a synthetic
+ * test conversation, runs the exact same `runResearchAgent` machinery the
+ * public action uses, and finalizes the message.
+ *
+ * With `simulateCrashAfterRound` set, the loop throws mid-flight WITHOUT
+ * finalizing — leaving the message stuck in `isStreaming: true` so the
+ * watchdog (`mutations/messages.finalizeStuck`) can be exercised.
+ *
+ * Run with:
+ *   npx convex run actions/chat:researchLoopTest '{"question": "…"}'
+ */
+export const researchLoopTest = internalAction({
+  args: {
+    question: v.string(),
+    simulateCrashAfterRound: v.optional(v.number()),
+  },
+  handler: async (
+    ctx,
+    args
+  ): Promise<{
+    conversationId: Id<"conversations">;
+    messageId: Id<"messages">;
+    usage: ResearchUsage;
+    steps: ResearchStep[];
+    sourceCount: number;
+    sources: Array<{ title: string; author: string; doc_id: string; locator: string }>;
+    contentPreview: string;
+  }> => {
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    if (!apiKey) throw new Error("ANTHROPIC_API_KEY not configured");
+
+    // Explicit annotation breaks the TS circularity from same-file
+    // internal.* references (per Convex guidelines).
+    const { conversationId }: { userId: Id<"users">; conversationId: Id<"conversations"> } =
+      await ctx.runMutation(
+        internal.mutations.testSupport.ensureTestConversation,
+        { title: `Research loop test: ${args.question.slice(0, 50)}` }
+      );
+
+    await ctx.runMutation(internal.mutations.messages.create, {
+      conversationId,
+      role: "user",
+      content: args.question,
+      isStreaming: false,
+    });
+    const assistantMsgId: Id<"messages"> = await ctx.runMutation(
+      internal.mutations.messages.create,
+      {
+        conversationId,
+        role: "assistant",
+        content: "",
+        model: "claude",
+        modelVariant: RESEARCH_MODEL,
+        isStreaming: true,
+      }
+    );
+
+    // Intentionally NOT wrapped in try/catch when simulating a crash —
+    // the message must stay isStreaming:true for the watchdog test.
+    const result = await runResearchAgent({
+      ctx,
+      assistantMsgId,
+      apiKey,
+      question: args.question,
+      history: [],
+      simulateCrashAfterRound: args.simulateCrashAfterRound,
+    });
+
+    await ctx.runMutation(internal.mutations.messages.finalize, {
+      messageId: assistantMsgId,
+      content: result.content,
+      sources: result.sources,
+    });
+
+    return {
+      conversationId,
+      messageId: assistantMsgId,
+      usage: result.usage,
+      steps: result.steps,
+      sourceCount: result.sources.length,
+      sources: result.sources.map((s) => ({
+        title: s.title,
+        author: s.author_speaker,
+        doc_id: s.doc_id,
+        locator: s.chapter_section,
+      })),
+      contentPreview: result.content.slice(0, 1500),
+    };
+  },
+});
+
+// ── Shared helpers ─────────────────────────────────────────────────────
+
+/**
+ * Load prior conversation history. We pull the full message doc (not just
+ * role+content) so we can re-attach each prior assistant turn's sources —
+ * without this, the LLM is blind to source [N] references the user might
+ * make about prior answers, and switching models mid-conversation loses
+ * citation continuity.
+ *
+ * Token-budget tradeoff: the LAST 2 assistant turns get FULL chunk text
+ * inlined (so the model can quote/discuss them); older turns get a
+ * title-only legend (so the model knows what [N] referred to without
+ * paying the full text cost).
+ */
+async function loadConversationHistory(
+  ctx: ActionCtx,
+  conversationId: Id<"conversations">
+): Promise<Array<{ role: string; content: string }>> {
+  const historyDocs = (await ctx.runQuery(api.queries.messages.byConversation, {
+    conversationId,
+  })) as Array<{
+    role: string;
+    content: string;
+    isStreaming?: boolean;
+    sources?: Array<{
+      title?: string;
+      author_speaker?: string;
+      text?: string;
+      chapter_section?: string;
+    }>;
+  }>;
+  // Exclude the in-flight assistant placeholder (this very reply).
+  const docs = historyDocs.filter((m) => !m.isStreaming);
+  // Find which assistant turns are "recent enough" to deserve full
+  // text. We walk backwards and mark the last 2 we see.
+  const recentAssistantIdx = new Set<number>();
+  {
+    let seen = 0;
+    for (let i = docs.length - 1; i >= 0 && seen < 2; i--) {
+      if (docs[i].role === "assistant" && docs[i].sources?.length) {
+        recentAssistantIdx.add(i);
+        seen++;
+      }
+    }
+  }
+  return docs.map((m, idx) => {
+    if (m.role !== "assistant" || !m.sources || m.sources.length === 0) {
+      return { role: m.role, content: m.content };
+    }
+    if (recentAssistantIdx.has(idx)) {
+      // Full inline — the model can re-quote these.
+      const block = m.sources
+        .slice(0, 36)
+        .map((s, i) => {
+          const head = `[${i + 1}] ${(s.title ?? "").slice(0, 100)}${
+            s.author_speaker ? " — " + s.author_speaker.slice(0, 60) : ""
+          }${s.chapter_section ? " · " + s.chapter_section.slice(0, 80) : ""}`;
+          const body = (s.text ?? "").slice(0, 1200);
+          return `${head}\n${body}`;
+        })
+        .join("\n\n");
+      return {
+        role: m.role,
+        content: `${m.content}\n\n--- SOURCES FROM THIS TURN ---\n${block}\n--- END SOURCES ---`,
+      };
+    }
+    // Older turn — title-only legend keeps citation references
+    // resolvable without flooding the context window.
+    const legend = m.sources
+      .slice(0, 36)
+      .map(
+        (s, i) =>
+          `[${i + 1}] ${(s.title ?? "").slice(0, 80)}${s.author_speaker ? " — " + s.author_speaker.slice(0, 60) : ""}`,
+      )
+      .join("\n");
+    return {
+      role: m.role,
+      content: `${m.content}\n\n(Sources from this turn:\n${legend})`,
+    };
+  });
+}
+
+/**
+ * Build the reply-language directive for a user message. The chat LLM
+ * otherwise drifts toward Turkish on every reply because the corpus and
+ * most history are Turkish. We override that drift with an explicit
+ * instruction wrapped around the user query.
+ */
+function buildLanguageDirective(content: string): string {
+  const detectedLang = detectReplyLanguage(content);
+  return (
+    `[SYSTEM: The user just wrote in ${detectedLang.label}. ` +
+    `You MUST write your ENTIRE reply in ${detectedLang.label}. ` +
+    `Do NOT switch to Turkish, Arabic, or any other language even ` +
+    `though the source passages are mostly Turkish. Translate any ` +
+    `quoted source material into ${detectedLang.label}, but keep ` +
+    `the original Turkish/Arabic phrase in parentheses or as a ` +
+    `parenthetical when a key term is untranslatable.]\n\n`
+  );
+}
 
 /** Look up a per-user API key for the chosen model. Returns null if BYOK is off. */
 async function resolveByokKey(
@@ -693,145 +1206,8 @@ async function withLLMRetry<T>(fn: () => T | Promise<T>): Promise<T> {
 }
 
 /**
- * Ask Gemini Flash Lite to plan the next batch of search queries for
- * agentic chat. The planner sees the user's original question, the
- * search history, and a snapshot of the most recently retrieved
- * sources, then returns either {done: true} or 1-3 fresh queries.
- *
- * Cost: ~1k input tokens × Flash Lite ≈ $0.0002 per planning call.
- * On a 6-round search that's ~$0.001 in planner cost — negligible.
- */
-async function runPlanner(
-  client: GoogleGenAI,
-  userQuery: string,
-  stepsSoFar: Array<{ query: string; resultCount: number; reasoning?: string }>,
-  recentSources: Array<{ chunk: Record<string, unknown> }>,
-  roundsRemaining: number,
-): Promise<{ done: boolean; queries: string[]; reasoning?: string }> {
-  // Compact source summary — title + first 200 chars of text. We don't
-  // need the full chunks; the planner just needs enough signal to spot
-  // gaps in coverage.
-  const sourceLines = recentSources.map((r, i) => {
-    const title = String(r.chunk.title ?? "").slice(0, 60);
-    const author = String(r.chunk.author_speaker ?? "").slice(0, 30);
-    const snippet = String(r.chunk.text ?? "").replace(/\s+/g, " ").slice(0, 180);
-    return `${i + 1}. [${title}${author ? " — " + author : ""}] ${snippet}`;
-  });
-
-  const historyLines = stepsSoFar.map(
-    (s) => `- "${s.query}" → ${s.resultCount} new sources`,
-  );
-  // Surface the reasoning the planner already issued so it doesn't keep
-  // re-stating the same gap analysis on every round. Each round the
-  // planner emits one rationale string that's stored on the first query
-  // of the round; we collect those.
-  const priorReasonings = stepsSoFar
-    .map((s) => s.reasoning)
-    .filter((r): r is string => typeof r === "string" && r.length > 0);
-
-  const prompt =
-    "You are a research planner for a hybrid-search RAG system over a " +
-    "Turkish Islamic scholarship corpus: Risale-i Nur, Fethullah Gülen's " +
-    "writings, Hizmet movement publications, and transcribed audio " +
-    "lessons. The corpus is ~95% Turkish.\n\n" +
-    "HOW THE RETRIEVAL ACTUALLY WORKS — read this carefully, it changes " +
-    "what 'good' queries look like:\n" +
-    "- Hybrid: dense vectors (Gemini Embed 2, 3072d) + BM25 sparse + RRF " +
-    "fusion + a cross-encoder reranker.\n" +
-    "- Dense retrieval matches PASSAGES against PASSAGES. The closer your " +
-    "query looks to how the source text actually phrases the idea, the " +
-    "better. A natural-sounding declarative sentence beats a keyword " +
-    "soup. A direct quote that might appear verbatim is gold.\n" +
-    "- BM25 catches rare/specific terminology — proper nouns, distinctive " +
-    "terms, Arabic loanwords. So including ONE specific term (e.g. " +
-    "'miraç', 'ma'rifetullah', 'sıdk') sharpens recall.\n" +
-    "- The corpus is already 95% Turkish Islamic scholarship — there is " +
-    "no need to append 'risale-i nur' / 'bediüzzaman' / 'hizmet' as " +
-    "metadata tags to every query. Doing so wastes BM25 weight on words " +
-    "that appear in nearly every chunk, AND degrades the dense vector " +
-    "by injecting topic noise. Attribution belongs in the query ONLY " +
-    "when you specifically want a passage by/about that figure.\n\n" +
-    "WRITE QUERIES THAT:\n" +
-    "1. Look like a sentence the source might actually contain. E.g. " +
-    "instead of 'namaz önemi risale-i nur', try 'namaz dinin direğidir' " +
-    "or 'namaz müminin miracıdır' — these are phrases scholars actually " +
-    "write, so dense retrieval lights up.\n" +
-    "2. Use the corpus's own vocabulary. 'namaz' not 'salah'. 'iman' not " +
-    "'faith'. 'marifetullah' not 'knowing God'. 'fariza' not 'religious " +
-    "duty'. 'tevhid' not 'monotheism'. 'sünnet' not 'tradition'.\n" +
-    "3. Vary the angle each round. Round 2 might be a definition, round " +
-    "3 a specific scholar's framing, round 4 a related Quranic concept, " +
-    "round 5 a counter-argument or common misunderstanding. Do NOT just " +
-    "rephrase prior searches.\n" +
-    "4. Try at least one direct-quote-style query — a phrase that might " +
-    "appear verbatim in a source ('namaz mü'minin miracıdır', " +
-    "'\"hayy\" ismi', 'iman bir nurdur').\n\n" +
-    `User's original question: ${userQuery}\n\n` +
-    `Searches already run:\n${historyLines.join("\n") || "(none)"}\n\n` +
-    (priorReasonings.length > 0
-      ? `Your prior gap analysis (do NOT repeat these — say something new):\n${priorReasonings.map((r, i) => `${i + 1}. ${r}`).join("\n")}\n\n`
-      : "") +
-    `Most recent sources retrieved (titles + snippets):\n${sourceLines.join("\n") || "(none)"}\n\n` +
-    `Rounds remaining: ${roundsRemaining}.\n\n` +
-    "Decide: do we have enough material, or do we need follow-up " +
-    "searches that explore a genuinely new angle the existing sources " +
-    "do not yet cover?\n\n" +
-    "Respond with STRICT JSON only — no markdown, no prose around it. " +
-    "Schema:\n" +
-    `{"done": boolean, "reasoning": string, "queries": string[]}\n\n` +
-    "If done is true, leave queries empty. Otherwise list 1-3 short, " +
-    "natural Turkish queries that mimic how source text would phrase " +
-    'the idea. Example: {"done": false, ' +
-    '"reasoning": "Have general importance but no source on namaz as miraç — ' +
-    'a core Risale framing", ' +
-    '"queries": ["namaz mü\'minin miracıdır", "miraç nurani helezon", "namaz manevi terakki vesilesi"]}.';
-
-  try {
-    const result = await client.models.generateContent({
-      model: AGENTIC_PLANNER_MODEL,
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      config: { temperature: 0.3, maxOutputTokens: 512 },
-    });
-    const text = (result.text ?? "").trim();
-    // Strip a ```json fence if the model insisted on adding one despite
-    // the instructions.
-    const cleaned = text.replace(/^```(?:json)?\s*|\s*```$/g, "").trim();
-    const parsed = JSON.parse(cleaned) as {
-      done?: boolean;
-      reasoning?: string;
-      queries?: unknown;
-    };
-    const queries = Array.isArray(parsed.queries)
-      ? parsed.queries.filter((q): q is string => typeof q === "string" && q.length > 0).slice(0, 3)
-      : [];
-    return {
-      done: parsed.done === true,
-      queries,
-      reasoning: typeof parsed.reasoning === "string" ? parsed.reasoning : undefined,
-    };
-  } catch (e) {
-    console.warn("planner call failed; ending agentic loop:", e);
-    return { done: true, queries: [] };
-  }
-}
-
-/**
- * Cheap heuristic for "is this query already Turkish?" — looks for any
- * Turkish-specific diacritic. Misses pure-ASCII Turkish words like
- * "namaz", but those slip through to the FastAPI cross-lingual path
- * anyway and don't hurt retrieval. We only need to catch obviously
- * English / non-Turkish queries here so we know to translate them.
- */
-function looksTurkish(s: string): boolean {
-  return /[ıİğĞşŞçÇöÖüÜ]/.test(s);
-}
-
-/**
- * Detect the reply language for a user message. The chat LLM otherwise
- * drifts to Turkish on every turn because the corpus, history, and
- * most sources are Turkish — we have to give it an explicit
- * "reply in X" instruction. Returns a code + a human label suitable
- * for splicing into a prompt.
+ * Detect the reply language for a user message. Returns a code + a human
+ * label suitable for splicing into a prompt.
  *
  * The detection is intentionally simple: Arabic-script glyphs → Arabic,
  * Turkish diacritics OR a Turkish stopword → Turkish, otherwise English.
@@ -840,7 +1216,7 @@ function looksTurkish(s: string): boolean {
  */
 function detectReplyLanguage(text: string): { code: "tr" | "en" | "ar"; label: string } {
   const t = text || "";
-  if (/[\u0600-\u06FF]/.test(t)) return { code: "ar", label: "Arabic" };
+  if (/[؀-ۿ]/.test(t)) return { code: "ar", label: "Arabic" };
   if (
     /[ıİğĞşŞçÇöÖüÜ]/.test(t) ||
     /\b(ve|bir|için|nedir|nasıl|hangi|olan|neden|olarak|hakkında)\b/i.test(t)
@@ -848,46 +1224,6 @@ function detectReplyLanguage(text: string): { code: "tr" | "en" | "ar"; label: s
     return { code: "tr", label: "Turkish" };
   }
   return { code: "en", label: "English" };
-}
-
-/**
- * Translate a non-Turkish question to Turkish via Gemini Flash Lite,
- * using the religious/scholarly vocabulary the corpus actually uses
- * (e.g. "namaz" not "salat", "iman" not "inanç"). Returns null on
- * any error so the caller can fall back gracefully.
- */
-async function translateToTurkish(
-  client: GoogleGenAI,
-  query: string,
-): Promise<string | null> {
-  try {
-    const result = await client.models.generateContent({
-      model: AGENTIC_PLANNER_MODEL,
-      contents: [
-        {
-          role: "user",
-          parts: [
-            {
-              text:
-                "Translate the following question to Turkish. Use the " +
-                "Islamic/scholarly Turkish vocabulary that Risale-i Nur " +
-                'and Fethullah Gülen use ("namaz" not "salat", "iman" ' +
-                'not "inanç", "marifetullah" not "Allah\'ı bilme"). ' +
-                "Return ONLY the Turkish translation — no quotes, no " +
-                "explanation, no preface.\n\n" +
-                `Question: ${query}`,
-            },
-          ],
-        },
-      ],
-      config: { temperature: 0, maxOutputTokens: 200 },
-    });
-    const out = (result.text ?? "").trim().replace(/^["']|["']$/g, "");
-    return out || null;
-  } catch (e) {
-    console.warn("translateToTurkish failed:", e);
-    return null;
-  }
 }
 
 function isTransientLLMError(err: unknown): boolean {

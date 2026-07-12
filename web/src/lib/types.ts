@@ -13,6 +13,9 @@ export interface ChunkResult {
   page_number: number | null;
   timestamp_start: number | null;
   timestamp_end: number | null;
+  /** Research-agent citation locator: inclusive passage-ordering range. */
+  passage_start?: number | null;
+  passage_end?: number | null;
   /** Fully-qualified URL to the original source file. Set at ingestion time. */
   source_url?: string | null;
   /** File extension (pdf, docx, epub, mp3, mp4). Derived from source_url. */
@@ -55,6 +58,16 @@ export interface AgenticStep {
   reasoning?: string;
 }
 
+/** One executed tool call in the Sonnet 5 research loop (new agentic mode). */
+export interface ResearchStep {
+  tool: string;
+  inputSummary: string;
+  resultCount?: number;
+  elapsedMs?: number;
+  isError?: boolean;
+  ts: number;
+}
+
 export interface Message {
   _id: string;
   conversationId: string;
@@ -69,6 +82,12 @@ export interface Message {
   /** Live status string while the agent is searching. Cleared on
    *  finalize. */
   agenticStatus?: string;
+  /** Research-agent (Sonnet 5 tool loop) timeline — one entry per tool
+   *  call. Present iff the reply ran in the new deep-research mode. */
+  researchSteps?: ResearchStep[];
+  /** Live one-line status while the research agent works. Cleared on
+   *  finalize. */
+  researchStatus?: string;
   createdAt: number;
 }
 

@@ -95,13 +95,12 @@ export function ChatContainer({ routeConversationId }: ChatContainerProps = {}) 
   );
   const [isLoading, setIsLoading] = useState(false);
   const [selectedSource, setSelectedSource] = useState<ChunkResult | null>(null);
-  // Deep-search (agentic) toggle. When on, the next message runs the
-  // multi-round search loop in convex/actions/chat.ts → up to 6 search
-  // rounds and ~36 sources. Default ON for Gemini (cheap planner +
-  // cheap synthesis), default OFF for Claude (10× the synthesis cost).
-  // Switching models mid-conversation does NOT auto-toggle — the user
-  // stays in control once they've expressed a preference.
-  const [agentic, setAgentic] = useState(() => model === "gemini");
+  // Deep-research (agentic) toggle. When on, the next message runs the
+  // Claude Sonnet 5 tool loop in convex/actions/chat.ts — iterative
+  // corpus search + reading with a live research timeline. It always
+  // runs on Claude (and counts against the Claude budget) regardless of
+  // the selected model family, so it now defaults OFF for everyone.
+  const [agentic, setAgentic] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // ── Live Convex queries ───────────────────────────────────
@@ -206,6 +205,8 @@ export function ChatContainer({ routeConversationId }: ChatContainerProps = {}) 
         isStreaming: m.isStreaming,
         agenticSteps: m.agenticSteps,
         agenticStatus: m.agenticStatus,
+        researchSteps: m.researchSteps,
+        researchStatus: m.researchStatus,
         createdAt: m.createdAt,
       }));
     }
@@ -502,7 +503,7 @@ export function ChatContainer({ routeConversationId }: ChatContainerProps = {}) 
                   ? "border-primary/40 bg-primary/10 text-primary hover:bg-primary/15"
                   : "border-border bg-card text-muted-foreground hover:text-foreground hover:bg-muted",
               )}
-              title="Deep search: runs multiple follow-up searches and gathers up to ~36 sources before answering. Slower and more expensive."
+              title="Deep research: an AI agent iteratively searches and reads the corpus before answering (runs on Claude, uses Claude tokens). Slower and more expensive."
             >
               <Telescope className="h-3 w-3" />
               <span className="hidden sm:inline">Deep search</span>

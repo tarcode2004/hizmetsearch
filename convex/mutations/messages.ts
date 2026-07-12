@@ -25,6 +25,17 @@ const sourceObject = v.object({
   timestamp_start: v.optional(v.number()),
   timestamp_end: v.optional(v.number()),
   score: v.optional(v.number()),
+  passage_start: v.optional(v.number()),
+  passage_end: v.optional(v.number()),
+});
+
+const researchStepObject = v.object({
+  tool: v.string(),
+  inputSummary: v.string(),
+  resultCount: v.optional(v.number()),
+  elapsedMs: v.optional(v.number()),
+  isError: v.optional(v.boolean()),
+  ts: v.number(),
 });
 
 export const create = internalMutation({
@@ -81,6 +92,63 @@ export const updateAgenticProgress = internalMutation({
   },
 });
 
+/**
+ * Patch research-agent progress mid-stream. Called by chat.sendMessage's
+ * Sonnet 5 tool loop once per loop round so the web UI can render the
+ * live "Researching…" timeline.
+ */
+export const updateResearchProgress = internalMutation({
+  args: {
+    messageId: v.id("messages"),
+    researchStatus: v.optional(v.string()),
+    researchSteps: v.optional(v.array(researchStepObject)),
+  },
+  handler: async (ctx, args) => {
+    const patch: Record<string, unknown> = {};
+    if (args.researchStatus !== undefined) patch.researchStatus = args.researchStatus;
+    if (args.researchSteps !== undefined) patch.researchSteps = args.researchSteps;
+    await ctx.db.patch(args.messageId, patch);
+  },
+});
+
+/**
+ * Watchdog sweep (see convex/crons.ts): finalize messages stuck in
+ * `isStreaming: true` for longer than `olderThanMs` (default 12 min).
+ * A Convex node action hard-caps at 10 minutes and is not retried, so
+ * any crash mid-loop would otherwise leave a permanently spinning
+ * message. Keeps whatever content/researchSteps already landed and
+ * appends an error note.
+ */
+export const finalizeStuck = internalMutation({
+  args: {
+    olderThanMs: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const cutoff = Date.now() - (args.olderThanMs ?? 12 * 60 * 1000);
+    const stuck = await ctx.db
+      .query("messages")
+      .withIndex("by_streaming", (q) =>
+        q.eq("isStreaming", true).lt("createdAt", cutoff),
+      )
+      .collect();
+    for (const msg of stuck) {
+      const note =
+        "\n\n> ⚠️ Bu yanıt tamamlanamadan kesildi. Lütfen tekrar deneyin. " +
+        "(The response was interrupted before completion. Please try again.)";
+      await ctx.db.patch(msg._id, {
+        content: (msg.content ?? "") + note,
+        isStreaming: false,
+        agenticStatus: undefined,
+        researchStatus: undefined,
+      });
+    }
+    if (stuck.length > 0) {
+      console.log(`finalizeStuck: finalized ${stuck.length} stuck message(s)`);
+    }
+    return stuck.length;
+  },
+});
+
 export const finalize = internalMutation({
   args: {
     messageId: v.id("messages"),
@@ -92,9 +160,10 @@ export const finalize = internalMutation({
       content: args.content,
       sources: args.sources,
       isStreaming: false,
-      // Clear the live status — the steps array stays around as the
-      // permanent record of the agent's search plan.
+      // Clear the live statuses — the steps arrays stay around as the
+      // permanent record of the agent's plan/timeline.
       agenticStatus: undefined,
+      researchStatus: undefined,
     });
   },
 });

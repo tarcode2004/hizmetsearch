@@ -1,12 +1,26 @@
 import React, { useState, useEffect } from "react";
 import ReactMarkdown from "react-markdown";
 import { motion } from "framer-motion";
-import { Compass, Shield, BookOpen, ChevronDown, ChevronUp, ExternalLink, Telescope, Loader2 } from "lucide-react";
+import {
+  Compass,
+  Shield,
+  BookOpen,
+  ChevronDown,
+  ChevronUp,
+  ExternalLink,
+  Telescope,
+  Loader2,
+  Search,
+  FileSearch,
+  Library,
+  ListTree,
+  AlertTriangle,
+} from "lucide-react";
 import { cn, detectArabicScript, truncate } from "@/lib/utils";
 import { LanguageBadge } from "@/components/shared/LanguageBadge";
 import { FeedbackWidget } from "@/components/shared/FeedbackWidget";
 import { CitationChip } from "@/components/ornaments/CitationChip";
-import type { ChunkResult, Message } from "@/lib/types";
+import type { ChunkResult, Message, ResearchStep } from "@/lib/types";
 import { useTranslation } from "@/lib/i18n/I18nProvider";
 import { buildSourceViewerUrl } from "@/lib/source-viewer";
 import { fadeInUp, spring } from "@/lib/motion";
@@ -236,7 +250,17 @@ export function MessageBubble({ message, onCitationSelect }: MessageBubbleProps)
             lineHeight: 1.65,
           }}
         >
-          {/* Agentic deep-search progress / plan. Shown above the answer. */}
+          {/* Research-agent timeline (Sonnet 5 tool loop). Shown above the answer. */}
+          {(message.researchStatus ||
+            (message.researchSteps && message.researchSteps.length > 0)) && (
+            <ResearchTimeline
+              steps={message.researchSteps ?? []}
+              status={message.researchStatus}
+              isStreaming={!!message.isStreaming}
+              sourceCount={message.sources?.length}
+            />
+          )}
+          {/* Legacy planner-mode plan — kept for historical messages. */}
           {(message.agenticStatus || (message.agenticSteps && message.agenticSteps.length > 0)) && (
             <AgenticPlan
               steps={message.agenticSteps ?? []}
@@ -500,6 +524,137 @@ function AgenticPlan({
             <div className="mt-1 flex items-center gap-2 text-[11px] italic text-muted-foreground">
               <Loader2 className="h-3 w-3 animate-spin" />
               {status}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Research agent timeline (Sonnet 5 tool loop) ───────────────────────
+
+const RESEARCH_TOOL_ICONS: Record<
+  string,
+  React.ComponentType<{ className?: string; style?: React.CSSProperties }>
+> = {
+  search_corpus: Search,
+  search_text: FileSearch,
+  list_works: Library,
+  get_work_outline: ListTree,
+  read_document: BookOpen,
+};
+
+const RESEARCH_TOOL_LABELS: Record<string, string> = {
+  search_corpus: "Semantic search",
+  search_text: "Text search",
+  list_works: "Browse catalog",
+  get_work_outline: "Outline",
+  read_document: "Read",
+};
+
+/**
+ * Live "Researching…" timeline for the Sonnet 5 tool loop: one row per
+ * executed tool call (icon + input summary + result count) while the
+ * message streams, collapsing to a one-line "Researched N sources via M
+ * tool calls" expander once the answer is final.
+ */
+function ResearchTimeline({
+  steps,
+  status,
+  isStreaming,
+  sourceCount,
+}: {
+  steps: ResearchStep[];
+  status?: string;
+  isStreaming: boolean;
+  sourceCount?: number;
+}) {
+  const [expanded, setExpanded] = useState(isStreaming);
+  // Auto-expand while streaming so the user can watch the research live;
+  // collapse to the summary line once the answer is finalized.
+  useEffect(() => {
+    setExpanded(isStreaming);
+  }, [isStreaming]);
+
+  const cited = sourceCount ?? 0;
+
+  return (
+    <div className="mb-4 rounded-lg border border-primary/20 bg-primary/5 px-3 py-2">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="flex w-full items-center gap-2 text-left text-[11px] text-primary"
+      >
+        <Telescope className="h-3 w-3 shrink-0" />
+        {isStreaming ? (
+          <>
+            <span className="font-semibold uppercase tracking-wider">
+              Researching…
+            </span>
+            <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+            <span className="truncate text-muted-foreground normal-case tracking-normal">
+              {steps.length} {steps.length === 1 ? "tool call" : "tool calls"}
+            </span>
+          </>
+        ) : (
+          <span className="text-muted-foreground">
+            <span className="font-semibold text-primary">Researched</span>{" "}
+            {cited > 0 ? (
+              <>
+                {cited} {cited === 1 ? "source" : "sources"} via{" "}
+              </>
+            ) : null}
+            {steps.length} {steps.length === 1 ? "tool call" : "tool calls"}
+          </span>
+        )}
+        <span className="ml-auto shrink-0 text-muted-foreground">
+          {expanded ? (
+            <ChevronUp className="h-3 w-3" />
+          ) : (
+            <ChevronDown className="h-3 w-3" />
+          )}
+        </span>
+      </button>
+
+      {expanded && (
+        <div className="mt-2 space-y-1">
+          {steps.map((s, i) => {
+            const Icon = RESEARCH_TOOL_ICONS[s.tool] ?? Search;
+            const label = RESEARCH_TOOL_LABELS[s.tool] ?? s.tool;
+            return (
+              <div
+                key={i}
+                className="flex items-start gap-2 text-[11px] text-foreground/80"
+              >
+                {s.isError ? (
+                  <AlertTriangle className="mt-0.5 h-3 w-3 shrink-0 text-amber-600 dark:text-amber-400" />
+                ) : (
+                  <Icon className="mt-0.5 h-3 w-3 shrink-0 text-muted-foreground" />
+                )}
+                <div className="min-w-0 flex-1 truncate">
+                  <span className="text-muted-foreground">{label}</span>{" "}
+                  <span className="font-medium text-foreground">
+                    {s.inputSummary}
+                  </span>
+                  {s.resultCount != null && !s.isError && (
+                    <span className="ml-2 text-muted-foreground">
+                      +{s.resultCount}
+                    </span>
+                  )}
+                  {s.isError && (
+                    <span className="ml-2 text-amber-600 dark:text-amber-400">
+                      failed
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+          {isStreaming && (
+            <div className="mt-1 flex items-center gap-2 text-[11px] italic text-muted-foreground">
+              <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+              {status || (steps.length === 0 ? "Planning research…" : "Writing answer…")}
             </div>
           )}
         </div>
