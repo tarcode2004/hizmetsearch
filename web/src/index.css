@@ -272,6 +272,17 @@
   transition: all 180ms ease-out;
   cursor: pointer;
 }
+/* Touch devices: expand the effective tap target to ~44px without
+   changing the chip's visual size. The chip is position: relative, so
+   an absolutely-positioned pseudo-element extends its hit area. */
+@media (hover: none) and (pointer: coarse) {
+  .citation-chip::after {
+    content: "";
+    position: absolute;
+    inset: -12px -8px;
+  }
+}
+
 .citation-chip:hover {
   background: oklch(78% 0.13 85 / 0.25);
   border-color: oklch(78% 0.13 85 / 0.65);

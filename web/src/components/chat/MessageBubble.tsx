@@ -261,7 +261,7 @@ export function MessageBubble({ message, onCitationSelect }: MessageBubbleProps)
           <div className="mt-4">
             <button
               onClick={() => setSourcesOpen(!sourcesOpen)}
-              className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+              className="flex items-center gap-1.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors pointer-coarse:min-h-11"
             >
               <BookOpen className="h-3 w-3" />
               {message.sources.length} {t("chat.sources")}

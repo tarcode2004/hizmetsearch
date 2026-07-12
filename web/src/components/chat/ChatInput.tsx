@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Send, Loader2 } from "lucide-react";
 import { cn, detectArabicScript } from "@/lib/utils";
 import { useTranslation } from "@/lib/i18n/I18nProvider";
@@ -13,7 +13,28 @@ export function ChatInput({ onSend, isLoading = false, disabled = false }: ChatI
   const { t } = useTranslation();
   const [input, setInput] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const formRef = useRef<HTMLFormElement>(null);
   const isArabic = detectArabicScript(input);
+
+  // Publish the composer's rendered height as `--composer-clearance` on
+  // <html> so fixed-position overlays (the feedback launcher) can offset
+  // themselves above the send button instead of overlapping it on
+  // narrow viewports. Tracks auto-resize growth via ResizeObserver and
+  // cleans up on unmount so other routes fall back to 0px.
+  useEffect(() => {
+    const el = formRef.current;
+    if (!el) return;
+    const root = document.documentElement;
+    const update = () =>
+      root.style.setProperty("--composer-clearance", `${el.offsetHeight}px`);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => {
+      ro.disconnect();
+      root.style.removeProperty("--composer-clearance");
+    };
+  }, []);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -42,7 +63,7 @@ export function ChatInput({ onSend, isLoading = false, disabled = false }: ChatI
   };
 
   return (
-    <form onSubmit={handleSubmit} className="border-t border-border bg-card p-4">
+    <form ref={formRef} onSubmit={handleSubmit} className="border-t border-border bg-card p-4">
       <div className="mx-auto flex max-w-3xl items-end gap-2">
         <div className="flex-1 rounded-xl border border-input bg-background px-3 py-2 focus-within:border-primary/40 focus-within:shadow-sm transition-all">
           <textarea
@@ -67,7 +88,7 @@ export function ChatInput({ onSend, isLoading = false, disabled = false }: ChatI
         <button
           type="submit"
           disabled={!input.trim() || isLoading || disabled}
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed"
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-primary text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed pointer-coarse:h-11 pointer-coarse:w-11"
         >
           {isLoading ? (
             <Loader2 className="h-4 w-4 animate-spin" />

@@ -12,6 +12,13 @@ import { cn } from "@/lib/utils";
  *
  * Hidden on `/source/*` because that route opens in its own tab and
  * has its own header — no room for the corner button.
+ *
+ * On routes with a bottom-anchored composer (chat), the button rides
+ * above it: ChatInput publishes its measured height as the
+ * `--composer-clearance` CSS variable on <html>, which we add to the
+ * `bottom` offset on viewports narrow enough for the send button to
+ * reach the corner (below lg). Everywhere else the variable is unset
+ * and falls back to 0px.
  */
 export function FeedbackLauncher() {
   const [open, setOpen] = useState(false);
@@ -26,11 +33,9 @@ export function FeedbackLauncher() {
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
 
-  // Don't render on routes where the fixed button overlaps other
-  // controls: the source viewer (new-tab route with its own header)
-  // and the chat page (the send-message button sits in the same
-  // bottom-right corner on mobile).
-  if (pathname.startsWith("/source/") || pathname.startsWith("/chat")) {
+  // Don't render on the source viewer — it opens in its own tab with
+  // its own header and controls.
+  if (pathname.startsWith("/source/")) {
     return null;
   }
 
@@ -41,7 +46,12 @@ export function FeedbackLauncher() {
         onClick={() => setOpen(true)}
         title="Send feedback"
         className={cn(
-          "fixed bottom-4 right-4 z-40 flex h-10 items-center gap-1.5",
+          // Base offset plus iOS safe area; below lg also clear the chat
+          // composer (`--composer-clearance` is 0 outside /chat) so the
+          // button never covers the send button.
+          "fixed right-4 z-40 flex h-10 items-center gap-1.5",
+          "bottom-[calc(1rem+env(safe-area-inset-bottom,0px))]",
+          "max-lg:bottom-[calc(1rem+env(safe-area-inset-bottom,0px)+var(--composer-clearance,0px))]",
           "rounded-full border border-border bg-card px-3 text-xs font-medium",
           "text-muted-foreground shadow-[var(--shadow-md)]",
           "hover:text-foreground hover:bg-muted hover:border-primary/30",

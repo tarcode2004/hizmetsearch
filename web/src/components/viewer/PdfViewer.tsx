@@ -196,13 +196,13 @@ export function PdfViewer({
           </button>
         </Tooltip>
 
-        <div className="mx-1 h-4 w-px bg-border" />
+        <div className="mx-1 hidden h-4 w-px bg-border sm:block" />
 
         <Tooltip content="Download" side="bottom">
           <a
             href={sourceUrl}
             download
-            className="pointer-events-auto flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+            className="pointer-events-auto hidden h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors sm:flex"
             aria-label="Download PDF"
           >
             <Download className="h-4 w-4" />
@@ -214,7 +214,7 @@ export function PdfViewer({
             href={sourceUrl}
             target="_blank"
             rel="noopener noreferrer"
-            className="pointer-events-auto flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+            className="pointer-events-auto hidden h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors sm:flex"
             aria-label="Open in new tab"
           >
             <ExternalLink className="h-4 w-4" />
@@ -223,7 +223,7 @@ export function PdfViewer({
       </div>
 
       {/* Keyboard hint */}
-      <div className="pointer-events-none absolute bottom-3 left-3 z-10 flex items-center gap-1.5 rounded-md bg-card/70 px-2 py-1 text-[10px] text-muted-foreground backdrop-blur opacity-50 hover:opacity-100 transition-opacity">
+      <div className="pointer-events-none absolute bottom-3 left-3 z-10 hidden items-center gap-1.5 rounded-md bg-card/70 px-2 py-1 text-[10px] text-muted-foreground backdrop-blur opacity-50 hover:opacity-100 transition-opacity md:flex">
         <Kbd>⌘F</Kbd>
         <span>to find text</span>
       </div>

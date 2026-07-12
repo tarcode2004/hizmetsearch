@@ -29,6 +29,29 @@ const DEFAULT_STATE: LayoutState = {
   zen: false,
 };
 
+/** True below the md breakpoint. The three-pane layout needs 596px of
+ *  fixed panel width, so on phones the side panels become overlays and
+ *  default to closed instead of squeezing the document to zero. */
+function useIsMobile(): boolean {
+  const [mobile, setMobile] = useState(() =>
+    typeof window !== "undefined" && typeof window.matchMedia === "function"
+      ? window.matchMedia("(max-width: 767px)").matches
+      : false
+  );
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia("(max-width: 767px)");
+    const update = () => setMobile(mq.matches);
+    if (typeof mq.addEventListener === "function") {
+      mq.addEventListener("change", update);
+      return () => mq.removeEventListener("change", update);
+    }
+    mq.addListener(update);
+    return () => mq.removeListener(update);
+  }, []);
+  return mobile;
+}
+
 function loadState(key: string): LayoutState {
   if (typeof window === "undefined") return DEFAULT_STATE;
   try {
@@ -70,16 +93,23 @@ export function ViewerLayout({
   storageKey = "hizmetsearch.viewer.layout",
   outlineAvailable = true,
 }: ViewerLayoutProps) {
-  const [state, setState] = useState<LayoutState>(() => loadState(storageKey));
+  const isMobile = useIsMobile();
+  const [state, setState] = useState<LayoutState>(() =>
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(max-width: 767px)").matches
+      ? { ...DEFAULT_STATE, outlineOpen: false, chunkOpen: false }
+      : loadState(storageKey)
+  );
 
-  // Persist (skip zen mode)
+  // Persist (skip zen mode; skip mobile where panels are transient overlays)
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    if (typeof window === "undefined" || isMobile) return;
     localStorage.setItem(
       storageKey,
       JSON.stringify({ outlineOpen: state.outlineOpen, chunkOpen: state.chunkOpen })
     );
-  }, [state.outlineOpen, state.chunkOpen, storageKey]);
+  }, [state.outlineOpen, state.chunkOpen, storageKey, isMobile]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -155,22 +185,37 @@ export function ViewerLayout({
       {/* Body: three panes */}
       <div className="relative flex flex-1 min-h-0">
         {/* ─── Left outline panel ─── */}
-        <AnimatePresence initial={false}>
-          {showOutline && (
-            <motion.aside
-              key="outline-panel"
-              initial={{ width: 0, opacity: 0 }}
-              animate={{ width: 256, opacity: 1 }}
-              exit={{ width: 0, opacity: 0 }}
-              transition={spring.gentle}
-              className="shrink-0 overflow-hidden border-r border-border bg-card"
-            >
-              <div className="h-full w-64 overflow-y-auto">
+        {isMobile ? (
+          showOutline && (
+            <div className="absolute inset-0 z-30 flex">
+              <div className="h-full w-64 max-w-[85vw] shrink-0 overflow-y-auto border-r border-border bg-card shadow-[var(--shadow-lg)]">
                 {outline}
               </div>
-            </motion.aside>
-          )}
-        </AnimatePresence>
+              <div
+                className="flex-1 bg-black/40"
+                onClick={toggleOutline}
+                aria-hidden
+              />
+            </div>
+          )
+        ) : (
+          <AnimatePresence initial={false}>
+            {showOutline && (
+              <motion.aside
+                key="outline-panel"
+                initial={{ width: 0, opacity: 0 }}
+                animate={{ width: 256, opacity: 1 }}
+                exit={{ width: 0, opacity: 0 }}
+                transition={spring.gentle}
+                className="shrink-0 overflow-hidden border-r border-border bg-card"
+              >
+                <div className="h-full w-64 overflow-y-auto">
+                  {outline}
+                </div>
+              </motion.aside>
+            )}
+          </AnimatePresence>
+        )}
 
         {/* ─── Middle: document ─── */}
         <div className="relative flex flex-1 min-w-0 bg-muted/20">
@@ -178,12 +223,12 @@ export function ViewerLayout({
 
           {/* Floating panel toggles (only when not in zen mode) */}
           {!state.zen && (
-            <div className="pointer-events-none absolute inset-y-0 left-0 right-0 flex items-start justify-between px-2 pt-3">
+            <div className="pointer-events-none absolute inset-y-0 left-0 right-0 flex items-start justify-between px-2 pt-16 md:pt-3">
               {outlineAvailable && !showOutline && (
                 <Tooltip content={<span>Outline <Kbd>⌘B</Kbd></span>} side="right">
                   <button
                     onClick={toggleOutline}
-                    className="pointer-events-auto flex h-8 w-8 items-center justify-center rounded-r-lg border border-l-0 border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground transition-colors shadow-[var(--shadow-sm)]"
+                    className="pointer-events-auto flex h-8 w-8 items-center justify-center rounded-r-lg border border-l-0 border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground transition-colors shadow-[var(--shadow-sm)] pointer-coarse:h-11 pointer-coarse:w-10"
                     aria-label="Show outline"
                   >
                     <PanelLeftOpen className="h-4 w-4" />
@@ -195,7 +240,7 @@ export function ViewerLayout({
                 <Tooltip content={<span>Highlighted passage <Kbd>⌘.</Kbd></span>} side="left">
                   <button
                     onClick={toggleChunk}
-                    className="pointer-events-auto flex h-8 w-8 items-center justify-center rounded-l-lg border border-r-0 border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground transition-colors shadow-[var(--shadow-sm)]"
+                    className="pointer-events-auto flex h-8 w-8 items-center justify-center rounded-l-lg border border-r-0 border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground transition-colors shadow-[var(--shadow-sm)] pointer-coarse:h-11 pointer-coarse:w-10"
                     aria-label="Show chunk panel"
                   >
                     <PanelRightOpen className="h-4 w-4" />
@@ -234,25 +279,40 @@ export function ViewerLayout({
         </div>
 
         {/* ─── Right chunk panel ─── */}
-        <AnimatePresence initial={false}>
-          {showChunk && (
-            <motion.aside
-              key="chunk-panel"
-              initial={{ width: 0, opacity: 0 }}
-              animate={{ width: 340, opacity: 1 }}
-              exit={{ width: 0, opacity: 0 }}
-              transition={spring.gentle}
-              className="shrink-0 overflow-hidden border-l border-border bg-card"
-            >
-              <div className="flex h-full w-[340px] flex-col">
+        {isMobile ? (
+          showChunk && (
+            <div className="absolute inset-0 z-30 flex">
+              <div
+                className="flex-1 bg-black/40"
+                onClick={toggleChunk}
+                aria-hidden
+              />
+              <div className="flex h-full w-[340px] max-w-[88vw] shrink-0 flex-col overflow-hidden border-l border-border bg-card shadow-[var(--shadow-lg)]">
                 {chunk}
               </div>
-            </motion.aside>
-          )}
-        </AnimatePresence>
+            </div>
+          )
+        ) : (
+          <AnimatePresence initial={false}>
+            {showChunk && (
+              <motion.aside
+                key="chunk-panel"
+                initial={{ width: 0, opacity: 0 }}
+                animate={{ width: 340, opacity: 1 }}
+                exit={{ width: 0, opacity: 0 }}
+                transition={spring.gentle}
+                className="shrink-0 overflow-hidden border-l border-border bg-card"
+              >
+                <div className="flex h-full w-[340px] flex-col">
+                  {chunk}
+                </div>
+              </motion.aside>
+            )}
+          </AnimatePresence>
+        )}
 
         {/* Panel close buttons when open — live on the panel edges */}
-        {showOutline && (
+        {!isMobile && showOutline && (
           <button
             onClick={toggleOutline}
             className={cn(
@@ -266,7 +326,7 @@ export function ViewerLayout({
             <PanelLeftClose className="h-3.5 w-3.5" />
           </button>
         )}
-        {showChunk && (
+        {!isMobile && showChunk && (
           <button
             onClick={toggleChunk}
             className={cn(

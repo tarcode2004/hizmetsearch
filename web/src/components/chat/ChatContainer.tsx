@@ -423,14 +423,6 @@ export function ChatContainer({ routeConversationId }: ChatContainerProps = {}) 
 
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden relative">
-      {/* Mobile sidebar toggle */}
-      <button
-        onClick={() => setSidebarOpen(!sidebarOpen)}
-        className="absolute top-16 left-4 z-30 flex h-10 w-10 items-center justify-center rounded-full bg-card shadow-lg border border-border md:hidden"
-      >
-        {sidebarOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
-      </button>
-
       {/* Mobile sidebar overlay */}
       {sidebarOpen && (
         <div
@@ -473,6 +465,15 @@ export function ChatContainer({ routeConversationId }: ChatContainerProps = {}) 
       <div className="flex flex-1 flex-col min-w-0">
         {/* Chat header */}
         <div className="flex items-center justify-between border-b border-border bg-card/50 px-3 py-2 gap-2 sm:px-4">
+          {/* Mobile sidebar toggle — inline in the header row so it
+              never floats over message text or the composer. */}
+          <button
+            onClick={() => setSidebarOpen(!sidebarOpen)}
+            className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border border-border bg-card text-muted-foreground hover:text-foreground hover:bg-muted transition-colors md:hidden"
+            aria-label="Toggle conversations"
+          >
+            {sidebarOpen ? <X className="h-4 w-4" /> : <Menu className="h-4 w-4" />}
+          </button>
           <h2 className="min-w-0 flex-1 text-sm font-semibold text-foreground truncate">
             {conversations.find((c) => c._id === activeConvId)?.title ??
               t("chat.newChat")}

@@ -355,7 +355,7 @@ export function AIAnswer({
         <div className="relative mt-5 border-t border-border/50 pt-4">
           <button
             onClick={() => setSourcesExpanded(!sourcesExpanded)}
-            className="flex items-center gap-2 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors"
+            className="flex items-center gap-2 text-xs font-medium text-muted-foreground hover:text-foreground transition-colors pointer-coarse:min-h-11"
           >
             <BookOpen className="h-3.5 w-3.5" />
             {sources.length} {t("search.sourcesUsed")}
