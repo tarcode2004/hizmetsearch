@@ -24,6 +24,14 @@ export function SourceViewerPage() {
   const { docId } = useParams<{ docId: string }>();
   const [params] = useSearchParams();
 
+  // Numeric query param, or null when absent/garbage — a malformed
+  // param must never surface as "§NaN" / "p. NaN" in the viewer chrome.
+  const numParam = (value: string | null): number | null => {
+    if (!value) return null;
+    const n = Number(value);
+    return Number.isFinite(n) ? n : null;
+  };
+
   const meta = useMemo(
     () => ({
       docId: docId ?? "",
@@ -31,12 +39,12 @@ export function SourceViewerPage() {
       sourceUrl: params.get("src"),
       sourceExt: params.get("ext"),
       sourceType: params.get("type"),
-      page: params.get("page") ? Number(params.get("page")) : null,
-      timestampStart: params.get("ts") ? Number(params.get("ts")) : null,
-      timestampEnd: params.get("te") ? Number(params.get("te")) : null,
-      charOffset: params.get("off") ? Number(params.get("off")) : null,
-      passageStart: params.get("ps") ? Number(params.get("ps")) : null,
-      passageEnd: params.get("pe") ? Number(params.get("pe")) : null,
+      page: numParam(params.get("page")),
+      timestampStart: numParam(params.get("ts")),
+      timestampEnd: numParam(params.get("te")),
+      charOffset: numParam(params.get("off")),
+      passageStart: numParam(params.get("ps")),
+      passageEnd: numParam(params.get("pe")),
       title: params.get("title") ?? "",
       author: params.get("author"),
       section: params.get("section"),

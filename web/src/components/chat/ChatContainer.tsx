@@ -258,19 +258,29 @@ export function ChatContainer({ routeConversationId }: ChatContainerProps = {}) 
   const handleSend = async (content: string) => {
     // Check token budget for the model that will actually execute — deep
     // research always runs (and charges) as Claude even when the Gemini
-    // family is selected.
+    // family is selected. Mirrors the server gate in
+    // convex/actions/chat.ts: block only when the monthly allotment is
+    // exhausted AND no credit-pack tokens remain — a paid credit pack
+    // must keep working after the monthly budget runs out.
     const effectiveModel: AIModel = agentic ? "claude" : model;
     const used =
       effectiveModel === "claude" ? user.claudeTokensUsed : user.geminiTokensUsed;
     const limit =
       effectiveModel === "claude" ? user.claudeTokensLimit : user.geminiTokensLimit;
-    if (!user.byokActive && used >= limit) {
+    const credit =
+      effectiveModel === "claude"
+        ? user.claudeCreditTokens ?? 0
+        : user.geminiCreditTokens ?? 0;
+    if (!user.byokActive && used >= limit && credit <= 0) {
       if (user.plan === "anonymous") {
         showUpgrade("anon-tokens-exhausted");
       } else if (user.plan === "free") {
         showUpgrade("free-to-pro");
       } else if (user.plan === "pro") {
         showUpgrade("pro-to-scholar");
+      } else {
+        // Scholar has no upgrade path — never drop the send silently.
+        toast.error(t("chat.quotaToast"));
       }
       return;
     }
@@ -284,9 +294,7 @@ export function ChatContainer({ routeConversationId }: ChatContainerProps = {}) 
       } else if (user.plan === "pro") {
         showUpgrade("pro-claude-exhausted");
       } else {
-        toast.error(
-          "Monthly Claude budget exhausted — buy a credit pack or add your own Anthropic API key in Settings."
-        );
+        toast.error(t("deepResearch.quotaToast"));
       }
       return;
     }
@@ -536,9 +544,7 @@ export function ChatContainer({ routeConversationId }: ChatContainerProps = {}) 
                   } else if (user.plan === "pro") {
                     showUpgrade("pro-claude-exhausted");
                   } else {
-                    toast.error(
-                      "Monthly Claude budget exhausted — buy a credit pack or add your own Anthropic API key in Settings."
-                    );
+                    toast.error(t("deepResearch.quotaToast"));
                   }
                   return;
                 }
@@ -555,12 +561,15 @@ export function ChatContainer({ routeConversationId }: ChatContainerProps = {}) 
               )}
               title={
                 !canDeepResearch && !agentic
-                  ? `Not enough Claude tokens left this month for a deep research answer (~${Math.round(ESTIMATED_RESEARCH_ANSWER_TOKENS / 1000)}K needed). Upgrade your plan, buy a credit pack, or add your own API key in Settings.`
-                  : "Deep research: an AI agent iteratively searches and reads the corpus before answering (runs on Claude, uses Claude tokens). Slower and more expensive."
+                  ? t("deepResearch.blockedTooltip").replace(
+                      "{tokens}",
+                      String(Math.round(ESTIMATED_RESEARCH_ANSWER_TOKENS / 1000)),
+                    )
+                  : t("deepResearch.tooltip")
               }
             >
               <Telescope className="h-3 w-3" />
-              <span className="hidden sm:inline">Deep search</span>
+              <span className="hidden sm:inline">{t("deepResearch.label")}</span>
             </button>
             <ModelSelector
               model={model}

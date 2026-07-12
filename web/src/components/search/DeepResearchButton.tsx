@@ -6,6 +6,7 @@ import { Telescope, Loader2 } from "lucide-react";
 import { api } from "@convex/api";
 import { cn, userFacingError } from "@/lib/utils";
 import { useAuth } from "@/lib/auth/AuthProvider";
+import { useTranslation } from "@/lib/i18n/I18nProvider";
 import { useUpgradePopup } from "@/lib/upgrade/UpgradePopupProvider";
 import { trackChatMessage } from "@/lib/analytics";
 import { ESTIMATED_RESEARCH_ANSWER_TOKENS } from "../../../../convex/lib/planLimits";
@@ -26,6 +27,7 @@ import { ESTIMATED_RESEARCH_ANSWER_TOKENS } from "../../../../convex/lib/planLim
  *                           upgrade popup (BYOK / plan upgrade)
  */
 export function DeepResearchButton({ query }: { query: string }) {
+  const { t } = useTranslation();
   const { user } = useAuth();
   const { show: showUpgrade } = useUpgradePopup();
   const navigate = useNavigate();
@@ -51,10 +53,7 @@ export function DeepResearchButton({ query }: { query: string }) {
     if (!hasBudget) {
       if (user.plan === "free") showUpgrade("free-claude-exhausted");
       else if (user.plan === "pro") showUpgrade("pro-claude-exhausted");
-      else
-        toast.error(
-          "Monthly Claude budget exhausted — buy a credit pack or add your own Anthropic API key in Settings."
-        );
+      else toast.error(t("deepResearch.quotaToast"));
       return;
     }
     setBusy(true);
@@ -75,16 +74,12 @@ export function DeepResearchButton({ query }: { query: string }) {
         agentic: true,
       }).catch((err) => {
         console.error("deep research sendMessage failed", err);
-        toast.error(
-          userFacingError(err, "Deep research failed. Please try again.")
-        );
+        toast.error(userFacingError(err, t("deepResearch.failed")));
       });
       navigate(`/chat/${conversationId}`);
     } catch (err) {
       console.error("deep research start failed", err);
-      toast.error(
-        userFacingError(err, "Could not start deep research. Please try again.")
-      );
+      toast.error(userFacingError(err, t("deepResearch.startFailed")));
       setBusy(false);
     }
   };
@@ -95,11 +90,10 @@ export function DeepResearchButton({ query }: { query: string }) {
         <Telescope className="h-4 w-4 shrink-0 text-primary" />
         <div className="min-w-0">
           <div className="text-[13px] font-medium text-foreground">
-            Deep research
+            {t("deepResearch.label")}
           </div>
           <div className="truncate text-[11px] text-muted-foreground">
-            An AI agent iteratively searches and reads the corpus for a fully
-            cited answer (~1 min, uses Claude tokens)
+            {t("deepResearch.searchDesc")}
           </div>
         </div>
       </div>
@@ -115,8 +109,11 @@ export function DeepResearchButton({ query }: { query: string }) {
         )}
         title={
           blocked
-            ? `Not enough Claude tokens left this month for a deep research answer (~${Math.round(ESTIMATED_RESEARCH_ANSWER_TOKENS / 1000)}K needed). Upgrade your plan, buy a credit pack, or add your own API key in Settings.`
-            : "Run an agentic deep-research answer for this query"
+            ? t("deepResearch.blockedTooltip").replace(
+                "{tokens}",
+                String(Math.round(ESTIMATED_RESEARCH_ANSWER_TOKENS / 1000)),
+              )
+            : t("deepResearch.startTooltip")
         }
       >
         {busy ? (
@@ -124,7 +121,7 @@ export function DeepResearchButton({ query }: { query: string }) {
         ) : (
           <Telescope className="h-3.5 w-3.5" />
         )}
-        {busy ? "Starting…" : "Start"}
+        {busy ? t("deepResearch.starting") : t("deepResearch.start")}
       </button>
     </div>
   );

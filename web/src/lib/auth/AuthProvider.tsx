@@ -33,6 +33,8 @@ export interface UserState {
   /** Remaining pre-paid Claude credit-pack tokens (0 when none). */
   claudeCreditTokens?: number;
   geminiTokensUsed: number;
+  /** Remaining pre-paid Gemini credit-pack tokens (0 when none). */
+  geminiCreditTokens?: number;
   geminiTokensLimit: number;
   byokActive: boolean;
 }
@@ -206,6 +208,7 @@ function ClerkBackedProvider({ children }: { children: ReactNode }) {
       claudeCreditTokens: usage.claudeCreditTokens ?? 0,
       geminiTokensUsed: usage.geminiTokensUsed,
       geminiTokensLimit: usage.geminiTokensLimit,
+      geminiCreditTokens: usage.geminiCreditTokens ?? 0,
       byokActive: usage.byokActive,
     };
   }, [isAuthenticated, clerkUser, usage]);

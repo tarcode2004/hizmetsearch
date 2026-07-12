@@ -66,6 +66,19 @@ export const translations = {
     "chat.modePrecision": "Hassas",
     "chat.sources": "kaynak",
     "chat.noConversations": "Henüz sohbet yok",
+    "chat.quotaToast": "Aylık token bütçeniz doldu — kredi paketi alın veya Ayarlar'dan kendi API anahtarınızı ekleyin.",
+
+    // ── Deep research ──────────────────────────
+    "deepResearch.label": "Derin Araştırma",
+    "deepResearch.tooltip": "Derin araştırma: bir yapay zekâ ajanı cevap vermeden önce külliyatı adım adım arar ve okur (Claude üzerinde çalışır, Claude tokenlarını kullanır). Daha yavaş ve daha maliyetlidir.",
+    "deepResearch.blockedTooltip": "Bu ay derin araştırma cevabı için yeterli Claude tokenınız kalmadı (~{tokens}K gerekir). Planınızı yükseltin, kredi paketi alın veya Ayarlar'dan kendi API anahtarınızı ekleyin.",
+    "deepResearch.quotaToast": "Aylık Claude bütçeniz doldu — kredi paketi alın veya Ayarlar'dan kendi Anthropic API anahtarınızı ekleyin.",
+    "deepResearch.searchDesc": "Bir yapay zekâ ajanı tam atıflı bir cevap için külliyatı adım adım arar ve okur (~1 dk, Claude tokenları kullanır)",
+    "deepResearch.start": "Başlat",
+    "deepResearch.starting": "Başlatılıyor…",
+    "deepResearch.startTooltip": "Bu sorgu için ajan destekli derin araştırma cevabı çalıştır",
+    "deepResearch.failed": "Derin araştırma başarısız oldu. Lütfen tekrar deneyin.",
+    "deepResearch.startFailed": "Derin araştırma başlatılamadı. Lütfen tekrar deneyin.",
 
     // ── Pricing ────────────────────────────────
     "pricing.title": "Planlar & Fiyatlandırma",
@@ -315,6 +328,19 @@ export const translations = {
     "chat.modePrecision": "Precision",
     "chat.sources": "sources",
     "chat.noConversations": "No conversations yet",
+    "chat.quotaToast": "Monthly token budget exhausted — buy a credit pack or add your own API key in Settings.",
+
+    // ── Deep research ──────────────────────────
+    "deepResearch.label": "Deep research",
+    "deepResearch.tooltip": "Deep research: an AI agent iteratively searches and reads the corpus before answering (runs on Claude, uses Claude tokens). Slower and more expensive.",
+    "deepResearch.blockedTooltip": "Not enough Claude tokens left this month for a deep research answer (~{tokens}K needed). Upgrade your plan, buy a credit pack, or add your own API key in Settings.",
+    "deepResearch.quotaToast": "Monthly Claude budget exhausted — buy a credit pack or add your own Anthropic API key in Settings.",
+    "deepResearch.searchDesc": "An AI agent iteratively searches and reads the corpus for a fully cited answer (~1 min, uses Claude tokens)",
+    "deepResearch.start": "Start",
+    "deepResearch.starting": "Starting…",
+    "deepResearch.startTooltip": "Run an agentic deep-research answer for this query",
+    "deepResearch.failed": "Deep research failed. Please try again.",
+    "deepResearch.startFailed": "Could not start deep research. Please try again.",
 
     // ── Pricing ────────────────────────────────
     "pricing.title": "Plans & Pricing",
