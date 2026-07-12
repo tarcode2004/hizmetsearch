@@ -49,7 +49,13 @@ import {
 import { budgetRefusal } from "../lib/budgetGate";
 import { resolveModelId } from "../lib/modelCatalog";
 import { captureGeneration } from "../lib/llmAnalytics";
-import { EvidenceLedger } from "../lib/evidence";
+import {
+  EvidenceLedger,
+  extractEvidenceUsedBlock,
+  numberEvidenceMarkers,
+  validateEvidenceUsage,
+  type CitationValidationError,
+} from "../lib/evidence";
 
 const MAX_HISTORY = 10;
 // Conservative output cap for plain chat. Chat replies almost never need
@@ -219,6 +225,7 @@ export const sendMessage = action({
           messageId: assistantMsgId,
           content: result.content,
           sources: result.sources,
+          citationIntegrity: result.citationIntegrity,
         });
 
         // Track token usage across ALL loop rounds (skip when BYOK).
@@ -553,6 +560,8 @@ type ResearchSourcePayload = {
   timestamp_end?: number;
   passage_start?: number;
   passage_end?: number;
+  evidenceId?: string;
+  sourceTextHash?: string;
 };
 
 interface ResearchResult {
@@ -560,6 +569,7 @@ interface ResearchResult {
   sources: ResearchSourcePayload[];
   steps: ResearchStep[];
   usage: ResearchUsage;
+  citationIntegrity: "verified" | "partial";
 }
 
 /**
@@ -661,12 +671,12 @@ async function runResearchAgent(opts: {
     }
   };
 
-  // ── Streaming content flush (throttled, hides the <sources> block) ──
+  // ── Streaming content flush (throttled, hides the evidence block) ──
   let accumulated = "";
   let lastFlushLen = 0;
   let lastFlushTime = 0;
   const flushContent = async (force = false) => {
-    const visible = stripSourcesBlock(accumulated);
+    const visible = stripEvidenceBlock(accumulated);
     const now = Date.now();
     if (!force) {
       if (visible.length - lastFlushLen < STREAM_FLUSH_CHARS) return;
@@ -834,7 +844,7 @@ async function runResearchAgent(opts: {
         text:
           "[SYSTEM NOTE] The research budget (tool calls / wall-clock time) is now exhausted. " +
           "Do NOT call any more tools. Write your final answer in the user's language using only the material you have already gathered, " +
-          "followed by the required <sources> block.",
+          "followed by the required evidence_used JSON line.",
       });
     }
 
@@ -849,7 +859,10 @@ async function runResearchAgent(opts: {
 
   await patchProgress("");
 
-  const { display, sources } = extractResearchSources(finalText, registry);
+  const finalized = await finalizeResearchAnswer(client, finalText, evidence);
+  usage.inputTokens += finalized.repairInputTokens;
+  usage.outputTokens += finalized.repairOutputTokens;
+  const { display, sources, citationIntegrity } = finalized;
   await ctx.runMutation(internal.mutations.messages.updateContent, {
     messageId: assistantMsgId,
     content: display,
@@ -862,97 +875,98 @@ async function runResearchAgent(opts: {
       `sources=${sources.length} elapsed_ms=${Date.now() - startedAt}`
   );
 
-  return { content: display, sources, steps, usage };
+  return { content: display, sources, steps, usage, citationIntegrity };
 }
 
-/**
- * Hide the machine-read `<sources>…</sources>` block (and any partially
- * streamed prefix of its opening tag) from the user-visible content.
- */
-function stripSourcesBlock(text: string): string {
-  const idx = text.indexOf("<sources>");
-  if (idx !== -1) return text.slice(0, idx).trimEnd();
-  // While streaming, the opening tag may be mid-flight — trim a trailing
-  // partial prefix like "<sou" so it never flashes in the UI.
-  const open = "<sources>";
-  for (let n = open.length - 1; n >= 1; n--) {
-    if (text.endsWith(open.slice(0, n))) return text.slice(0, -n).trimEnd();
-  }
-  return text;
+function stripEvidenceBlock(text: string): string {
+  const parsed = extractEvidenceUsedBlock(text);
+  if (parsed) return parsed.display;
+  const idx = text.lastIndexOf("\n{");
+  return idx >= 0 && /"evidence_used"/.test(text.slice(idx))
+    ? text.slice(0, idx).trimEnd()
+    : text;
 }
 
-/**
- * Parse the model's final `<sources>` block into the persisted source
- * payload, enriching each entry with tool-observed work metadata (the
- * model is trusted for n/doc_id/locator/quote; title/author/collection
- * come from the doc registry when available).
- */
-function extractResearchSources(
-  raw: string,
-  registry: DocRegistry
-): { display: string; sources: ResearchSourcePayload[] } {
-  const display = stripSourcesBlock(raw);
-  const m = raw.match(/<sources>\s*([\s\S]*?)\s*<\/sources>/);
-  if (!m) return { display, sources: [] };
+function validationSummary(errors: Array<string | CitationValidationError>): string {
+  return errors.map((error) => JSON.stringify(error)).join("\n");
+}
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(m[1]);
-  } catch (e) {
-    console.warn("research sources block did not parse as JSON:", e);
-    return { display, sources: [] };
-  }
-  if (!Array.isArray(parsed)) return { display, sources: [] };
-
-  const entries = (parsed as Array<Record<string, unknown>>)
-    .filter((s) => s && typeof s === "object" && typeof s.doc_id === "string")
-    .sort((a, b) => Number(a.n ?? 0) - Number(b.n ?? 0));
-
-  const num = (v: unknown): number | undefined =>
-    typeof v === "number" && Number.isFinite(v) ? v : undefined;
-
-  const sources: ResearchSourcePayload[] = entries.map((s, i) => {
-    const docId = String(s.doc_id);
-    const meta = registry.get(docId);
-    const loc = (s.locator ?? {}) as Record<string, unknown>;
-    const passageStart = num(loc.passage_start);
-    const passageEnd = num(loc.passage_end) ?? passageStart;
-    const pageStart = num(loc.page_start);
-    const pageEnd = num(loc.page_end);
-    const tsStart = num(loc.timestamp_start);
-
-    // Human-readable locator for today's renderer (T5 reworks chips).
+function evidenceSources(ids: string[], ledger: EvidenceLedger): ResearchSourcePayload[] {
+  return ids.flatMap((id, index) => {
+    const record = ledger.get(id);
+    if (!record) return [];
     const locBits: string[] = [];
-    if (pageStart != null) {
-      locBits.push(pageEnd != null && pageEnd !== pageStart ? `s. ${pageStart}–${pageEnd}` : `s. ${pageStart}`);
-    }
-    if (passageStart != null) {
-      locBits.push(
-        passageEnd != null && passageEnd !== passageStart
-          ? `§${passageStart}–${passageEnd}`
-          : `§${passageStart}`
-      );
-    }
-
-    return {
-      chunk_id: `research:${docId}:${s.n ?? i + 1}`,
-      doc_id: docId,
-      text: String(s.quote ?? "").slice(0, 400),
-      source_type: meta?.source_type ?? "text",
-      language: meta?.language ?? "tr",
-      collection: meta?.collection ?? "",
-      title: String(meta?.title ?? s.title ?? "").slice(0, 200),
-      author_speaker: String(meta?.author_speaker ?? s.author ?? "").slice(0, 120),
-      publisher: (meta?.publisher ?? "").slice(0, 120),
-      chapter_section: locBits.join(" · ").slice(0, 200),
-      page_number: pageStart,
-      timestamp_start: tsStart,
-      passage_start: passageStart,
-      passage_end: passageEnd,
-    };
+    if (record.locator.pageStart != null) locBits.push(`s. ${record.locator.pageStart}`);
+    if (record.locator.passageStart != null) locBits.push(`§${record.locator.passageStart}`);
+    return [{
+      chunk_id: `research:${record.docId}:${index + 1}`,
+      doc_id: record.docId,
+      text: record.excerpt.slice(0, 400),
+      source_type: record.sourceType ?? "text",
+      language: record.language ?? "tr",
+      collection: record.collection ?? "",
+      title: record.title.slice(0, 200),
+      author_speaker: (record.author ?? "").slice(0, 120),
+      publisher: "",
+      chapter_section: locBits.join(" · "),
+      page_number: record.locator.pageStart,
+      timestamp_start: record.locator.timestampStart,
+      passage_start: record.locator.passageStart,
+      passage_end: record.locator.passageEnd,
+      evidenceId: record.id,
+      sourceTextHash: record.sourceTextHash,
+    }];
   });
+}
 
-  return { display, sources };
+function verifiedOnlyFallback(raw: string, ledger: EvidenceLedger): string {
+  const body = stripEvidenceBlock(raw);
+  const kept = body.split(/(?<=[.!?])\s+|\n+/).filter((part) => {
+    const ids = [...part.matchAll(/\[\^(ev_[A-Za-z0-9_-]+)\]/g)].map((m) => m[1]);
+    return ids.length > 0 && ids.every((id) => ledger.get(id));
+  });
+  const limitation = "Some statements were omitted because the available sources did not verify them.";
+  return kept.length ? `${kept.join("\n\n")}\n\n> ${limitation}` : `> ${limitation}`;
+}
+
+async function finalizeResearchAnswer(
+  client: Anthropic,
+  raw: string,
+  ledger: EvidenceLedger,
+): Promise<{ display: string; sources: ResearchSourcePayload[]; citationIntegrity: "verified" | "partial"; repairInputTokens: number; repairOutputTokens: number }> {
+  const check = (candidate: string) => {
+    const parsed = extractEvidenceUsedBlock(candidate);
+    if (!parsed) return { parsed: null, errors: ["missing_evidence_used"] as Array<string | CitationValidationError> };
+    return { parsed, errors: validateEvidenceUsage({ answer: parsed.display, evidenceUsed: parsed.evidenceUsed, ledger }) };
+  };
+  let candidate = raw;
+  let result = check(candidate);
+  let repairInputTokens = 0;
+  let repairOutputTokens = 0;
+  if (result.errors.length) {
+    const projection = ledger.values().map(({ id, title, author, locator, excerpt }) => ({ id, title, author, locator, excerpt }));
+    try {
+      const repair = await withLLMRetry(() => client.messages.create({
+        model: RESEARCH_MODEL,
+        max_tokens: 4096,
+        system: "Repair citation integrity only. Use no tools and no knowledge outside the supplied evidence. Delete or rewrite unsupported claims. Use only supplied Evidence IDs. End with exactly one evidence_used JSON line.",
+        messages: [{ role: "user", content: `Draft:\n${candidate}\n\nValidation errors:\n${validationSummary(result.errors)}\n\nAllowed evidence:\n${JSON.stringify(projection)}` }],
+      }));
+      repairInputTokens = repair.usage.input_tokens;
+      repairOutputTokens = repair.usage.output_tokens;
+      candidate = repair.content.filter((b): b is Anthropic.TextBlock => b.type === "text").map((b) => b.text).join("");
+      result = check(candidate);
+    } catch (error) {
+      console.warn("citation repair failed; publishing verified-only fallback", error);
+    }
+  }
+  if (!result.parsed || result.errors.length) {
+    const fallback = verifiedOnlyFallback(candidate, ledger);
+    const numbered = numberEvidenceMarkers(fallback);
+    return { display: numbered.display, sources: evidenceSources(numbered.ids, ledger), citationIntegrity: "partial", repairInputTokens, repairOutputTokens };
+  }
+  const numbered = numberEvidenceMarkers(result.parsed.display);
+  return { display: numbered.display, sources: evidenceSources(numbered.ids, ledger), citationIntegrity: "verified", repairInputTokens, repairOutputTokens };
 }
 
 // ── Shared helpers ─────────────────────────────────────────────────────

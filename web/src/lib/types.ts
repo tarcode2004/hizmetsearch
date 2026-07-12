@@ -88,6 +88,7 @@ export interface Message {
   /** Live one-line status while the research agent works. Cleared on
    *  finalize. */
   researchStatus?: string;
+  citationIntegrity?: "legacy" | "verified" | "partial";
   createdAt: number;
 }
 

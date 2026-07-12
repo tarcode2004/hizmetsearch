@@ -58,6 +58,7 @@ export const getShared = query({
         content: m.content,
         model: m.model,
         sources: m.sources,
+        citationIntegrity: m.citationIntegrity,
         createdAt: m.createdAt,
       })),
       author: author?.name ?? null,

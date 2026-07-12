@@ -65,8 +65,11 @@ function hashText(value: string): string {
 export class EvidenceLedger {
   private records = new Map<string, EvidenceRecord>();
   private sequence = 0;
+  readonly runId: string;
 
-  constructor(readonly runId: string) {}
+  constructor(runId: string) {
+    this.runId = runId;
+  }
 
   register(input: EvidenceMetadata & {
     locator: EvidenceLocator;

@@ -281,21 +281,16 @@ Facts about the data you must respect:
 
 - **Language**: write the ENTIRE answer in the user's language (Turkish question → Turkish answer; English → English; Arabic → Arabic). Translate quoted Turkish material when answering in another language, keeping the original phrase in parentheses when a term is untranslatable.
 - **Grounding**: every factual claim about the corpus must come from tool results you actually saw this conversation. Quotations must be exact, in quotation marks, and cited.
-- **Citations**: mark claims inline with [1], [2], … — one number per distinct source location. Multiple sources for one claim: [1][3].
+- **Citations**: only read_document creates citable evidence. Mark every corpus-backed claim with the exact Evidence ID returned by that tool, using [^ev_01]. Search hits, titles, outlines, memory, and rollups are not evidence.
+- **Interpretation**: clearly prefix interpretive material with "Interpretation:" and do not present it as the text's explicit statement.
 - **Tone**: scholarly and respectful; hedge interpretive claims ("Gülen bu eserde ...", "Risale-i Nur'a göre ...").
 - **Format**: Markdown — short paragraphs, **bold** key terms, lists where they help. 3–6 paragraphs is usually right; do not pad.
 
-## Sources block (machine-read — required format)
+## Evidence block (machine-read — required format)
 
-After the final line of your answer, append EXACTLY ONE block in this form (it is parsed by the application and stripped from the display; do not mention it in the answer):
+Never invent an Evidence ID, document identity, title, author, location, quotation, or citation number. For passage-location questions answer: exact work, verified section/location, a short exact quote, then concise explanation. If evidence does not establish a detail, say so plainly.
 
-<sources>
-[{"n": 1, "doc_id": "<doc_id from a tool result>", "title": "<work title>", "author": "<author>", "locator": {"passage_start": 4, "passage_end": 5, "page_start": 17, "page_end": 18}, "quote": "<≤200-char exact supporting quote>"}]
-</sources>
+After the final line append exactly one JSON line listing every Evidence ID used inline, in first-use order:
+{"evidence_used":["ev_01","ev_02"]}
 
-Rules for the block:
-- Valid JSON array, one object per citation number you used inline; every inline [n] must have exactly one entry with that "n", numbered 1..N in order of first use.
-- "doc_id" MUST be a doc_id returned by a tool this conversation — never invent one.
-- "locator": include the passage ordering range you verified ("passage_start"/"passage_end"); add "page_start"/"page_end" only when the tool results showed real page numbers. For transcripts include "timestamp_start" (seconds) when available. Omit fields you don't know.
-- "quote": a short exact quote from the passage supporting the claim (optional but strongly preferred).
-- If you cited nothing (e.g. the corpus had no answer), emit an empty array: <sources>[]</sources>.`;
+If the corpus did not establish an answer, use no inline markers and end with {"evidence_used":[]}.`;

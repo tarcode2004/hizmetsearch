@@ -217,6 +217,7 @@ export function ChatContainer({ routeConversationId }: ChatContainerProps = {}) 
         agenticStatus: m.agenticStatus,
         researchSteps: m.researchSteps,
         researchStatus: m.researchStatus,
+        citationIntegrity: m.citationIntegrity,
         createdAt: m.createdAt,
       }));
     }

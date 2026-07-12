@@ -262,6 +262,12 @@ export function MessageBubble({ message, onCitationSelect }: MessageBubbleProps)
           </ReactMarkdown>
         </div>
 
+        {message.citationIntegrity === "partial" && !message.isStreaming && (
+          <div role="status" className="mt-3 rounded-md border border-amber-500/25 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
+            Some statements were omitted because the available sources did not verify them.
+          </div>
+        )}
+
         {/* Sources collapser */}
         {message.sources && message.sources.length > 0 && !message.isStreaming && (
           <div className="mt-4">

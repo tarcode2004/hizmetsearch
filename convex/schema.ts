@@ -56,9 +56,12 @@ export default defineSchema({
            *  tool loop; absent on classic retrieval sources. */
           passage_start: v.optional(v.number()),
           passage_end: v.optional(v.number()),
+          evidenceId: v.optional(v.string()),
+          sourceTextHash: v.optional(v.string()),
         })
       )
     ),
+    citationIntegrity: v.optional(v.union(v.literal("legacy"), v.literal("verified"), v.literal("partial"))),
     isStreaming: v.boolean(),
     /** Agentic chat: when the assistant ran a multi-step deep search,
      *  this captures the per-round plan so the UI can show the user

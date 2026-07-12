@@ -114,6 +114,10 @@ function renderBubble(message: Message) {
 }
 
 describe("MessageBubble citations (T4 research-source format)", () => {
+  it("discloses when finalization omitted unsupported statements", () => {
+    const { getByRole } = renderBubble(makeMessage({ citationIntegrity: "partial" }));
+    expect(getByRole("status").textContent).toMatch(/omitted.*did not verify/i);
+  });
   it("renders no citation placeholders (NOGLYPH) for any documented form", () => {
     const { container } = renderBubble(makeMessage({}));
     expect(containsCitationPlaceholder(container.textContent ?? "")).toBe(

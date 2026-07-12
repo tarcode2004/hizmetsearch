@@ -27,6 +27,8 @@ const sourceObject = v.object({
   score: v.optional(v.number()),
   passage_start: v.optional(v.number()),
   passage_end: v.optional(v.number()),
+  evidenceId: v.optional(v.string()),
+  sourceTextHash: v.optional(v.string()),
 });
 
 const researchStepObject = v.object({
@@ -154,11 +156,13 @@ export const finalize = internalMutation({
     messageId: v.id("messages"),
     content: v.string(),
     sources: v.optional(v.array(sourceObject)),
+    citationIntegrity: v.optional(v.union(v.literal("legacy"), v.literal("verified"), v.literal("partial"))),
   },
   handler: async (ctx, args) => {
     await ctx.db.patch(args.messageId, {
       content: args.content,
       sources: args.sources,
+      citationIntegrity: args.citationIntegrity,
       isStreaming: false,
       // Clear the live statuses — the steps arrays stay around as the
       // permanent record of the agent's plan/timeline.

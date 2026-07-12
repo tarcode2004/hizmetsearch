@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from fastapi import APIRouter, Depends, Request
 
 from app.deps import get_retrieval_pipeline, get_pipeline_settings
@@ -19,7 +20,17 @@ async def health(
     settings: Settings = Depends(get_pipeline_settings),
 ):
     try:
-        info = pipeline.store.client.get_collection(settings.qdrant_collection)
+        # The retrieval client deliberately allows slow 60s searches, but a
+        # liveness probe must never inherit that timeout. Bound the dependency
+        # check so Fly can keep routing to a healthy API process while still
+        # reporting Qdrant as degraded in the response body.
+        info = await asyncio.wait_for(
+            asyncio.to_thread(
+                pipeline.store.client.get_collection,
+                settings.qdrant_collection,
+            ),
+            timeout=3,
+        )
         # qdrant-client 1.10+ removed `vectors_count` from CollectionInfo;
         # use `points_count` instead. Keep `vectors_count` as a fallback so
         # this still works against older Qdrant versions.
