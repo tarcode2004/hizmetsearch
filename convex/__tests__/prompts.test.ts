@@ -8,6 +8,7 @@ import {
   formatSourcesForLLM,
   buildSearchAnswerPrompt,
   buildChatClaudePrompt,
+  RESEARCH_AGENT_SYSTEM,
   toAnthropicMessages,
   type SourceContext,
 } from "../lib/prompts";
@@ -75,6 +76,21 @@ describe("formatSourcesForLLM", () => {
     ];
     const out = formatSourcesForLLM(audio);
     expect(out).toContain("2:05–3:20");
+  });
+});
+
+describe("research source priority policy", () => {
+  it("protects primary books and applies user-context routing", () => {
+    expect(RESEARCH_AGENT_SYSTEM).toContain("Source priority is user-context-led");
+    expect(RESEARCH_AGENT_SYSTEM).toContain('category="risale"');
+    expect(RESEARCH_AGENT_SYSTEM).toContain('category="pirlanta"');
+    expect(RESEARCH_AGENT_SYSTEM).toContain("broad thematic questions search BOTH categories independently");
+  });
+
+  it("keeps ders and other publications supplementary unless requested", () => {
+    expect(RESEARCH_AGENT_SYSTEM).toContain("Risale dersleri, sermons/audio transcripts, and other Hizmet publications are supplementary by default");
+    expect(RESEARCH_AGENT_SYSTEM).toContain("Explicit requests override the default");
+    expect(RESEARCH_AGENT_SYSTEM).toContain("never add a weak primary citation");
   });
 });
 

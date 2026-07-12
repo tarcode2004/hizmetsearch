@@ -92,6 +92,7 @@ export const RESEARCH_TOOLS: Anthropic.Tool[] = [
     description:
       "Semantic (dense-vector hybrid) search over the corpus. Use for THEMATIC or FUZZY queries where the wording of the source is unknown — conceptual questions, paraphrases, cross-lingual queries. " +
       "Phrase the query like a sentence the source might actually contain; use the corpus's own vocabulary. " +
+      "DEFAULT SOURCE POLICY: do not make one unfiltered call. For Nursi/Risale questions set filters.category='risale'; for Gulen/Hizmet questions set 'pirlanta'; for broad themes make separate 'risale' and 'pirlanta' calls. Search 'risale_dersleri' or 'hizmet' later unless the user explicitly asked for that material. " +
       "Leave use_reranker=false during exploration (it adds ~2s per call and can misrank work-selection queries); its results can be noisy, so CROSS-CHECK important findings with search_text before citing. " +
       "For 'which work discusses X' questions prefer search_text with source_type='text' instead.",
     input_schema: {
@@ -125,7 +126,7 @@ export const RESEARCH_TOOLS: Anthropic.Tool[] = [
               type: "string",
               enum: ["risale", "risale_dersleri", "pirlanta", "hizmet"],
               description:
-                "Corpus slice: 'risale' = Risale-i Nur (Said Nursi), 'risale_dersleri' = Risale lectures, 'pirlanta' = Fethullah Gülen's written works, 'hizmet' = Hizmet movement publications.",
+                "Corpus slice and priority boundary: 'risale' = primary Risale-i Nur books; 'pirlanta' = primary Fethullah Gülen written works; 'risale_dersleri' = supplementary Risale lectures; 'hizmet' = supplementary movement publications. Explicit user requests override this default priority.",
             },
             author_prefix: {
               type: "string",

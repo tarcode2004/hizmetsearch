@@ -11,6 +11,7 @@ from app.deps import get_retrieval_pipeline
 from app.ratelimit import limiter, search_rate_limit
 from app.schemas import SearchRequest, SearchResponse, SearchResultItem, ChunkResponse
 from hizmetrag.retrieval.pipeline import RetrievalPipeline
+from app.source_priority import infer_source_context, prioritize_results
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -39,8 +40,14 @@ CATEGORY_SPECS: dict[str, dict] = {
     },
     "pirlanta": {
         # Match author substring — handles "M. Fethullah Gülen", "Fethullah
-        # Gülen", "Fethullah GÜLEN" etc.
+        # Gülen", "Fethullah GÜLEN" etc. Herkul web/sohbet series are
+        # supplementary rather than written/Pırlanta books.
         "author_prefixes": ["Gülen"],
+        "exclude_collections": [
+            "Herkul Kırık Testi",
+            "Herkul Nağme",
+            "Herkul Bamteli",
+        ],
     },
     "hizmet": {
         # Everything that's NOT Risale and NOT Gülen-authored.
@@ -48,6 +55,26 @@ CATEGORY_SPECS: dict[str, dict] = {
         "exclude_author_prefixes": ["Gülen"],
     },
 }
+
+def retrieve_with_source_priority(
+    pipeline: RetrievalPipeline,
+    *,
+    query: str,
+    top_k: int,
+    language: str | None,
+    use_reranker: bool,
+):
+    context = infer_source_context(query)
+    # One retrieval/reranker pass keeps latency and provider cost bounded.
+    # A small overfetch gives the priority policy nearby candidates without
+    # allowing authority to rescue deeply irrelevant results.
+    candidates = pipeline.retrieve(
+        query=query,
+        top_k=min(max(top_k + 4, top_k * 2), 40),
+        language=language,
+        use_reranker=use_reranker,
+    )
+    return prioritize_results(candidates, top_k, context), context
 
 
 def _chunk_to_response(chunk) -> ChunkResponse:
@@ -94,14 +121,24 @@ async def search(
         cat_kwargs = dict(CATEGORY_SPECS[body.category])
 
     try:
-        results = pipeline.retrieve(
-            query=body.query,
-            top_k=body.top_k,
-            language=body.language,
-            collection=body.collection if not cat_kwargs else None,
-            use_reranker=body.use_reranker,
-            **cat_kwargs,
-        )
+        if body.category or body.collection:
+            results = pipeline.retrieve(
+                query=body.query,
+                top_k=body.top_k,
+                language=body.language,
+                collection=body.collection if not cat_kwargs else None,
+                use_reranker=body.use_reranker,
+                **cat_kwargs,
+            )
+            source_context = body.category or "collection"
+        else:
+            results, source_context = retrieve_with_source_priority(
+                pipeline,
+                query=body.query,
+                top_k=body.top_k,
+                language=body.language,
+                use_reranker=body.use_reranker,
+            )
     except Exception as exc:
         posthog_client.capture_exception(exc, distinct_id=distinct_id)
         posthog_client.capture(
@@ -137,6 +174,7 @@ async def search(
             "language": body.language,
             "category": body.category,
             "use_reranker": body.use_reranker,
+            "source_context": source_context,
         },
     )
 
