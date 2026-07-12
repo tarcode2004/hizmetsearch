@@ -4,6 +4,7 @@ import {
   normalizeEvidenceText,
   validateEvidenceUsage,
 } from "../lib/evidence";
+import { executeResearchTool, type DocRegistry } from "../lib/agentTools";
 
 function ledger() {
   const result = new EvidenceLedger("research-run-a");
@@ -63,5 +64,26 @@ describe("validateEvidenceUsage", () => {
     expect(validateEvidenceUsage({
       answer: "Claim [^ev_01]", evidenceUsed: ["ev_01"], ledger: second,
     }).map((error) => error.code)).toContain("cross_run_evidence");
+  });
+});
+
+describe("tool evidence boundary", () => {
+  it("creates evidence only from read_document responses", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({
+      doc_id: "sozler-23", title: "Sözler", author_speaker: "Said Nursî",
+      source_type: "text", range_start_passage: 10, range_end_passage: 11,
+      passages: [{ ordering: 10 }], text: "iki yüksek dağ var, birbirine bakıyor",
+    }), { status: 200 })) as typeof fetch;
+    try {
+      const evidence = new EvidenceLedger("run");
+      const registry: DocRegistry = new Map();
+      const result = await executeResearchTool("https://tools.test", "key", "read_document", { doc_id: "sozler-23" }, registry, evidence);
+      expect(result.isError).toBe(false);
+      expect(result.resultText).toContain('"evidence_id":"ev_01"');
+      expect(evidence.get("ev_01")?.docId).toBe("sozler-23");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
