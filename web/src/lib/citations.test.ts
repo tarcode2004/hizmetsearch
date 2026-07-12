@@ -8,6 +8,7 @@ import {
   formatSourceLocator,
   mergeSourceEntries,
   preprocessCitations,
+  researchCitationNumber,
   resolveSourceDisplay,
 } from "./citations";
 import type { ChunkResult } from "./types";
@@ -57,6 +58,19 @@ describe("preprocessCitations", () => {
     );
     expect(preprocessCitations("array[abc] and [not a citation]")).toBe(
       "array[abc] and [not a citation]",
+    );
+  });
+
+  it("leaves markdown links with numeric text alone", () => {
+    expect(preprocessCitations("see [1](https://x.com) now")).toBe(
+      "see [1](https://x.com) now",
+    );
+    expect(preprocessCitations("see [1, 2](https://x.com)")).toBe(
+      "see [1, 2](https://x.com)",
+    );
+    // A citation followed by prose parentheses is still a citation.
+    expect(preprocessCitations("fact [1] (see below)")).toBe(
+      `fact ${chip(1)} (see below)`,
     );
   });
 });
@@ -187,6 +201,63 @@ describe("mergeSourceEntries / resolveSourceDisplay", () => {
     const resolved = resolveSourceDisplay([s1, bare], 2);
     expect(resolved?.title).toBe("Ruhumuzun Heykelini Dikerken-1");
     expect(resolved?.author_speaker).toBe("M. Fethullah Gülen");
+  });
+});
+
+describe("gap numbering (non-contiguous model citations)", () => {
+  // The model emitted [1] and [3]; entry [2] was dropped as malformed.
+  // The persisted array is dense ([doc_a, doc_b]) but the true n
+  // survives in chunk_id — chips must resolve by n, not position.
+  const gapA = researchSource({ chunk_id: "research:doc_a:1" });
+  const gapB = researchSource({
+    chunk_id: "research:doc_b:3",
+    doc_id: "doc_b",
+    title: "Sözler",
+    chapter_section: "s. 40",
+  });
+  const gapped = [gapA, gapB];
+
+  it("parses the true citation number out of the chunk_id", () => {
+    expect(researchCitationNumber(gapA)).toBe(1);
+    expect(researchCitationNumber(gapB)).toBe(3);
+    expect(
+      researchCitationNumber(researchSource({ chunk_id: "qdrant-chunk-9" })),
+    ).toBeUndefined();
+  });
+
+  it("resolves chip [3] to the work persisted with n=3, not sources[2]", () => {
+    expect(resolveSourceDisplay(gapped, 1)?.doc_id).toBe("doc_a");
+    expect(resolveSourceDisplay(gapped, 3)?.doc_id).toBe("doc_b");
+  });
+
+  it("renders a chip for a dropped number inert instead of misattributing", () => {
+    // [2] was dropped server-side; positionally sources[1] is doc_b —
+    // resolving it there would be the misattribution bug.
+    expect(resolveSourceDisplay(gapped, 2)).toBeUndefined();
+  });
+
+  it("carries the true numbers onto merged source rows", () => {
+    const merged = mergeSourceEntries(gapped);
+    expect(merged).toHaveLength(2);
+    expect(merged[0].numbers).toEqual([1]);
+    expect(merged[1].numbers).toEqual([3]);
+  });
+
+  it("merges same-doc entries under their true numbers", () => {
+    const gapA2 = researchSource({
+      chunk_id: "research:doc_a:4",
+      chapter_section: "s. 90",
+    });
+    const merged = mergeSourceEntries([gapA, gapB, gapA2]);
+    expect(merged).toHaveLength(2);
+    expect(merged[0].numbers).toEqual([1, 4]);
+    expect(merged[1].numbers).toEqual([3]);
+  });
+
+  it("keeps positional resolution for classic retrieval sources", () => {
+    const c1 = researchSource({ chunk_id: "chunk-1", doc_id: "doc_x" });
+    const c2 = researchSource({ chunk_id: "chunk-2", doc_id: "doc_y" });
+    expect(resolveSourceDisplay([c1, c2], 2)?.doc_id).toBe("doc_y");
   });
 });
 

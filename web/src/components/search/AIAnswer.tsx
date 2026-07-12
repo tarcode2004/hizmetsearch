@@ -114,16 +114,20 @@ export function AIAnswer({
     }
   };
 
-  // Build a chip for one citation number.
+  // Build a chip for one citation number. An out-of-range number (the
+  // model cited a source we don't have) renders an inert chip — not an
+  // href="#" that opens a junk tab (same behavior as MessageBubble).
   const makeChip = (num: number, key: string) => {
     const source = sources[num - 1];
-    const href = source ? buildSourceViewerUrl(source.chunk) : "#";
+    if (!source) {
+      return <CitationChip key={key} number={num} />;
+    }
     return (
       <CitationChip
         key={key}
         number={num}
-        href={href}
-        tooltip={source ? <CitationSourceTooltip source={source.chunk} /> : undefined}
+        href={buildSourceViewerUrl(source.chunk)}
+        tooltip={<CitationSourceTooltip source={source.chunk} />}
         target="_blank"
         rel="noopener"
         onClick={(e) => {

@@ -60,8 +60,11 @@ export function expandRangeOrList(inner: string): number[] {
  * (so e.g. regular markdown links survive).
  */
 export function preprocessCitations(text: string): string {
+  // The trailing `(?!\()` keeps markdown links whose text is a bare
+  // number — "[1](https://x)" — from being mangled into a chip
+  // followed by a literal "(https://x)".
   return text.replace(
-    /\[\s*(?:sources?|src|kaynak(?:lar)?)?\s*:?\s*([\d,\s\-–—]+)\s*\]/gi,
+    /\[\s*(?:sources?|src|kaynak(?:lar)?)?\s*:?\s*([\d,\s\-–—]+)\s*\](?!\()/gi,
     (match, inner: string) => {
       const nums = expandRangeOrList(inner);
       if (nums.length === 0) return match;
@@ -264,16 +267,58 @@ export function formatSourceLocator(src: ChunkResult): string[] {
 }
 
 /**
- * Backfill missing display metadata on a source from a sibling entry that
- * cites the same work (same doc_id). The research loop occasionally
- * persists two entries for one work where only one got registry-enriched
- * metadata (the duplicate-edition artifact).
+ * The model's true citation number for a research source, parsed back out
+ * of the synthetic chunk_id (`research:{doc_id}:{n}`).
+ *
+ * The research loop persists a dense, n-sorted array but does NOT
+ * renumber the inline [N] markers in the answer text; when the model
+ * numbered non-contiguously (n: 1, 3) or a malformed entry was dropped,
+ * positional lookup (`sources[N-1]`) silently misattributes every later
+ * chip — wrong work, wrong quote, wrong deep link. Resolving by this
+ * persisted n keeps chips correct for new AND historical messages.
+ * Returns undefined for classic retrieval sources (which are contiguous
+ * by construction and resolve positionally).
+ */
+export function researchCitationNumber(src: ChunkResult): number | undefined {
+  if (!isResearchSource(src)) return undefined;
+  const m = /:(\d+)$/.exec(src.chunk_id);
+  return m ? Number(m[1]) : undefined;
+}
+
+/**
+ * Find the source cited as [num]. Research sources resolve strictly by
+ * their persisted n; classic retrieval sources resolve positionally.
+ * Returns undefined when nothing matches — the chip renders inert
+ * rather than pointing at the wrong work.
+ */
+function findCitedSource(
+  sources: ChunkResult[] | undefined,
+  num: number,
+): ChunkResult | undefined {
+  if (!sources) return undefined;
+  const byN = sources.find((s) => researchCitationNumber(s) === num);
+  if (byN) return byN;
+  const positional = sources[num - 1];
+  if (!positional) return undefined;
+  // Never positionally resolve a research source under a different n —
+  // that is exactly the misattribution failure mode.
+  const n = researchCitationNumber(positional);
+  if (n !== undefined && n !== num) return undefined;
+  return positional;
+}
+
+/**
+ * Resolve the source for citation [num] (see `findCitedSource`), then
+ * backfill missing display metadata from a sibling entry that cites the
+ * same work (same doc_id). The research loop occasionally persists two
+ * entries for one work where only one got registry-enriched metadata
+ * (the duplicate-edition artifact).
  */
 export function resolveSourceDisplay(
   sources: ChunkResult[] | undefined,
   num: number,
 ): ChunkResult | undefined {
-  const src = sources?.[num - 1];
+  const src = findCitedSource(sources, num);
   if (!src) return undefined;
   if (src.title && src.author_speaker) return src;
   const sibling = sources?.find(
@@ -307,11 +352,15 @@ export function mergeSourceEntries(sources: ChunkResult[]): MergedSourceEntry[] 
   const out: MergedSourceEntry[] = [];
   const byDoc = new Map<string, MergedSourceEntry>();
   sources.forEach((src, i) => {
+    // Research entries display the model's true citation number (parsed
+    // from chunk_id) so the rows match the inline chips even when the
+    // model numbered non-contiguously; classic chunks are positional.
+    const num = researchCitationNumber(src) ?? i + 1;
     const canMerge = isResearchSource(src) && !!src.doc_id;
     const existing = canMerge ? byDoc.get(src.doc_id) : undefined;
     const locator = formatSourceLocator(src).join(" · ");
     if (existing) {
-      existing.numbers.push(i + 1);
+      existing.numbers.push(num);
       if (locator && !existing.locators.includes(locator)) {
         existing.locators.push(locator);
       }
@@ -325,8 +374,8 @@ export function mergeSourceEntries(sources: ChunkResult[]): MergedSourceEntry[] 
       return;
     }
     const entry: MergedSourceEntry = {
-      source: resolveSourceDisplay(sources, i + 1) ?? src,
-      numbers: [i + 1],
+      source: resolveSourceDisplay(sources, num) ?? src,
+      numbers: [num],
       locators: locator ? [locator] : [],
     };
     if (canMerge) byDoc.set(src.doc_id, entry);
