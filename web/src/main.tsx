@@ -1,5 +1,18 @@
 import { StrictMode, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
+// Self-hosted fonts (replaces the render-blocking Google Fonts link).
+// Each import registers @font-face rules with per-subset unicode-range,
+// so browsers fetch only the scripts a page actually uses:
+// latin + latin-ext (full Turkish diacritics) for Fraunces/Source Sans 3,
+// arabic for Amiri (quoted passages).
+import "@fontsource-variable/fraunces/opsz.css";
+import "@fontsource-variable/fraunces/opsz-italic.css";
+import "@fontsource-variable/source-sans-3/index.css";
+import "@fontsource-variable/source-sans-3/wght-italic.css";
+import "@fontsource/amiri/400.css";
+import "@fontsource/amiri/700.css";
+import "@fontsource/jetbrains-mono/400.css";
+import "@fontsource/jetbrains-mono/500.css";
 import "./index.css";
 import App from "./App.tsx";
 import { ClerkProvider, useAuth as useClerkAuth } from "@clerk/clerk-react";
@@ -43,7 +56,7 @@ function ThemedClerkProvider({ children }: { children: ReactNode }) {
           // Match HizmetSearch's tezhib palette so the modal feels native
           colorPrimary:
             resolvedTheme === "dark" ? "#4a9d7e" : "#1f5f4a",
-          fontFamily: "var(--font-sans, Inter, system-ui, sans-serif)",
+          fontFamily: "var(--font-sans, 'Source Sans 3 Variable', system-ui, sans-serif)",
           borderRadius: "0.625rem",
         },
       }}

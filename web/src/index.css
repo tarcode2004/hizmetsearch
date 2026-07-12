@@ -9,9 +9,15 @@
    ────────────────────────────────────────────────────────────── */
 
 @theme {
-  /* ─── Typography ─── */
-  --font-display: "Fraunces", "Source Serif Pro", Georgia, serif;
-  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  /* ─── Typography ───
+     Display serif: Fraunces (variable, optical sizing) — scholarly voice
+     for headings, work titles, and citation numerals.
+     UI sans: Source Sans 3 (variable) — humanist companion for chrome
+     and body copy; full Turkish diacritic coverage via latin-ext.
+     Arabic: Amiri — classical Naskh for quoted passages.
+     All self-hosted via @fontsource (imports in src/main.tsx). */
+  --font-display: "Fraunces Variable", "Fraunces", Georgia, serif;
+  --font-sans: "Source Sans 3 Variable", "Source Sans 3", ui-sans-serif, system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
   --font-arabic: "Amiri", "Traditional Arabic", serif;
 
@@ -39,7 +45,7 @@
 
   /* ─── Gilt gold — reserved for citations + focus highlights ─── */
   --color-gilt: oklch(78% 0.13 85);
-  --color-gilt-deep: oklch(62% 0.14 75);
+  --color-gilt-deep: oklch(52% 0.13 75);   /* AA on paper at chip sizes */
 
   /* ─── Tertiary accents (used sparingly) ─── */
   --color-hadid: oklch(62% 0.11 220);               /* teal — data viz */
@@ -113,7 +119,6 @@
   body {
     @apply bg-background text-foreground antialiased;
     font-family: var(--font-sans);
-    font-feature-settings: "cv11", "ss03", "ss04", "calt";  /* Inter stylistic sets */
     margin: 0;
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
