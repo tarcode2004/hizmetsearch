@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useSearchParams, Link } from "react-router-dom";
-import { FileQuestion, ArrowLeft } from "lucide-react";
+import { FileQuestion, ArrowLeft, BookOpen } from "lucide-react";
 import { getViewerKind, parseSourcePathTrail } from "@/lib/source-viewer";
+import { cleanSourceTitle, formatTimestamp } from "@/lib/citations";
+import { cn, detectArabicScript } from "@/lib/utils";
 import { useTranslation } from "@/lib/i18n/I18nProvider";
 import { ViewerHeader } from "@/components/viewer/ViewerHeader";
 import { PdfViewer, extractPdfMetadata, findPageWithText } from "@/components/viewer/PdfViewer";
@@ -33,6 +35,8 @@ export function SourceViewerPage() {
       timestampStart: params.get("ts") ? Number(params.get("ts")) : null,
       timestampEnd: params.get("te") ? Number(params.get("te")) : null,
       charOffset: params.get("off") ? Number(params.get("off")) : null,
+      passageStart: params.get("ps") ? Number(params.get("ps")) : null,
+      passageEnd: params.get("pe") ? Number(params.get("pe")) : null,
       title: params.get("title") ?? "",
       author: params.get("author"),
       section: params.get("section"),
@@ -107,6 +111,14 @@ export function SourceViewerPage() {
   // ─── Rendering ──────────────────────────────────────────────
 
   if (!meta.sourceUrl) {
+    // No original file to load. Research-agent citations (T4) carry no
+    // source_url — the corpus tool server knows the work but the viewer
+    // has no client-accessible file for it — yet the URL params still
+    // hold the full citation payload (title, author, locator, quote), so
+    // render a citation-details page instead of a dead "not found".
+    if (meta.title || meta.chunkText) {
+      return <CitationDetails meta={meta} />;
+    }
     return <NotFound />;
   }
 
@@ -275,6 +287,114 @@ export function SourceViewerPage() {
   }
 
   return <Unsupported />;
+}
+
+interface CitationMeta {
+  docId: string;
+  title: string;
+  author: string | null;
+  section: string | null;
+  collection: string | null;
+  language: string | null;
+  page: number | null;
+  timestampStart: number | null;
+  passageStart: number | null;
+  passageEnd: number | null;
+  chunkText: string;
+}
+
+/**
+ * Fallback view for citations without a loadable source file (research-
+ * agent sources). Presents the work title, author, locator, and the
+ * quoted passage — everything the citation carried — plus an honest note
+ * that the full document isn't available in the viewer yet.
+ */
+function CitationDetails({ meta }: { meta: CitationMeta }) {
+  const { locale } = useTranslation();
+  const isArabic = detectArabicScript(meta.chunkText || meta.title);
+
+  const locatorBits: string[] = [];
+  if (meta.section) locatorBits.push(meta.section);
+  else {
+    if (meta.page != null) locatorBits.push(`s. ${meta.page}`);
+    if (meta.passageStart != null) {
+      locatorBits.push(
+        meta.passageEnd != null && meta.passageEnd !== meta.passageStart
+          ? `§${meta.passageStart}–${meta.passageEnd}`
+          : `§${meta.passageStart}`
+      );
+    }
+  }
+  if (meta.timestampStart != null)
+    locatorBits.push(formatTimestamp(meta.timestampStart));
+
+  const note =
+    locale === "tr"
+      ? "Bu eserin tam metni henüz görüntüleyicide mevcut değil. Aşağıda alıntılanan bölüm gösteriliyor."
+      : "The full document for this work isn't available in the viewer yet. The cited passage is shown below.";
+  const quoteLabel = locale === "tr" ? "Alıntılanan bölüm" : "Cited passage";
+  const backLabel = locale === "tr" ? "Aramaya dön" : "Back to search";
+
+  return (
+    <div className="min-h-screen w-full bg-background">
+      <div className="mx-auto max-w-[680px] px-6 py-12">
+        <Link
+          to="/"
+          className="inline-flex items-center gap-1.5 text-sm font-medium text-primary hover:underline"
+        >
+          <ArrowLeft className="h-4 w-4" />
+          {backLabel}
+        </Link>
+
+        <div className="mt-6 flex items-start gap-3">
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-primary/10">
+            <BookOpen className="h-5 w-5 text-primary" />
+          </div>
+          <div className="min-w-0">
+            <h1
+              className="text-xl font-semibold leading-tight text-foreground"
+              style={{ fontFamily: "var(--font-display)" }}
+            >
+              {cleanSourceTitle(meta.title) || meta.docId}
+            </h1>
+            {meta.author && (
+              <p
+                className="mt-0.5 text-sm text-muted-foreground"
+                style={{ fontFamily: "var(--font-display)", fontStyle: "italic" }}
+              >
+                {meta.author}
+              </p>
+            )}
+            {(locatorBits.length > 0 || meta.collection) && (
+              <p className="mt-1 text-[11px] uppercase tracking-[0.06em] text-muted-foreground/80">
+                {[...locatorBits, meta.collection].filter(Boolean).join(" · ")}
+              </p>
+            )}
+          </div>
+        </div>
+
+        {meta.chunkText && (
+          <div className="mt-8">
+            <div className="mb-2 text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
+              {quoteLabel}
+            </div>
+            <blockquote
+              dir={isArabic ? "rtl" : "ltr"}
+              className={cn(
+                "rounded-xl border border-border/60 bg-card/60 p-5 text-[15px] leading-relaxed text-foreground/85",
+                "border-l-4 border-l-primary/50",
+                isArabic && "font-[var(--font-arabic)] text-base"
+              )}
+            >
+              {meta.chunkText}
+            </blockquote>
+          </div>
+        )}
+
+        <p className="mt-6 text-xs text-muted-foreground">{note}</p>
+      </div>
+    </div>
+  );
 }
 
 function NotFound() {

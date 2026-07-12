@@ -19,13 +19,17 @@ export function buildSourceViewerUrl(chunk: ChunkResult): string {
     params.set("te", String(chunk.timestamp_end));
   if (chunk.char_offset != null)
     params.set("off", String(chunk.char_offset));
+  // Research-agent locator (passage-ordering range within the work).
+  if (chunk.passage_start != null)
+    params.set("ps", String(chunk.passage_start));
+  if (chunk.passage_end != null) params.set("pe", String(chunk.passage_end));
   if (chunk.title) params.set("title", chunk.title);
   if (chunk.author_speaker) params.set("author", chunk.author_speaker);
   if (chunk.chapter_section) params.set("section", chunk.chapter_section);
   if (chunk.collection) params.set("col", chunk.collection);
   if (chunk.language) params.set("lang", chunk.language);
   // The highlighted text itself — keep first 500 chars to fit in URL
-  params.set("q", chunk.text.slice(0, 500));
+  if (chunk.text) params.set("q", chunk.text.slice(0, 500));
 
   return `/source/${chunk.doc_id}?${params.toString()}`;
 }

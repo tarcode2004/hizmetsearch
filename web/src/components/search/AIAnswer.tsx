@@ -14,57 +14,23 @@ import {
   MessageSquarePlus,
 } from "lucide-react";
 import { api } from "@convex/api";
-import { cn, detectArabicScript, truncate } from "@/lib/utils";
+import { cn, truncate } from "@/lib/utils";
 import { FeedbackWidget } from "@/components/shared/FeedbackWidget";
 import { CitationChip } from "@/components/ornaments/CitationChip";
-import type { AIModel, ChunkResult, SearchResult } from "@/lib/types";
+import { CitationSourceTooltip } from "@/components/ornaments/CitationSourceTooltip";
+import type { AIModel, SearchResult } from "@/lib/types";
 import { useTranslation } from "@/lib/i18n/I18nProvider";
 import { useAuth } from "@/lib/auth/AuthProvider";
 import { buildSourceViewerUrl } from "@/lib/source-viewer";
+import {
+  cleanSourceTitle,
+  formatSourceLocator,
+  preprocessCitations,
+  renderCitedChildren,
+  withCitationFallthrough,
+} from "@/lib/citations";
 import { captureError } from "@/lib/observability";
 import { fade, spring } from "@/lib/motion";
-
-/**
- * Hover tooltip content for an AI Answer citation chip — same shape
- * as the chat-message version (title, optional author/page/timestamp,
- * truncated chunk text, RTL-aware). Lifted into its own component so
- * the chip itself stays small and the tooltip can be styled freely.
- */
-function CitationTooltipContent({ source }: { source: ChunkResult }) {
-  const isArabic = detectArabicScript(source.text);
-  const meta: string[] = [];
-  if (source.author_speaker) meta.push(source.author_speaker);
-  if (source.page_number != null) meta.push(`p. ${source.page_number}`);
-  else if (source.timestamp_start != null) {
-    const m = Math.floor(source.timestamp_start / 60);
-    const s = Math.floor(source.timestamp_start % 60).toString().padStart(2, "0");
-    meta.push(`${m}:${s}`);
-  }
-  return (
-    <div className="w-[300px] p-3">
-      <p
-        className="text-[13px] font-semibold text-foreground leading-tight"
-        style={{ fontFamily: "var(--font-display)" }}
-      >
-        {source.title}
-      </p>
-      {meta.length > 0 && (
-        <p className="mt-0.5 text-[10px] text-muted-foreground">
-          {meta.join(" · ")}
-        </p>
-      )}
-      <p
-        dir={isArabic ? "rtl" : "ltr"}
-        className={cn(
-          "mt-2 text-[11px] leading-snug text-foreground/75 line-clamp-4",
-          isArabic && "font-[var(--font-arabic)] text-[13px]",
-        )}
-      >
-        {truncate(source.text, 220)}
-      </p>
-    </div>
-  );
-}
 
 interface AIAnswerProps {
   answer: string;
@@ -88,56 +54,6 @@ const FOLLOWUP_SUGGESTIONS = [
   "How does Bediüzzaman frame this?",
   "What do other scholars say?",
 ];
-
-// Placeholder we substitute for citations BEFORE handing the text to
-// ReactMarkdown. CommonMark interprets `[5]` as a shortcut reference link
-// and either strips the brackets or eats the markup entirely when no
-// matching link definition exists, so by the time our React component
-// sees the children the `[N]` markers are already mangled. We use
-// private-use Unicode characters that the markdown parser passes through
-// verbatim, then swap them back into chips after parsing.
-//
-// Recognized citation shapes:
-//   [1]            single
-//   [1][2]         adjacent (handled by chained matches)
-//   [1, 2, 3]      comma list — expanded into 3 separate chips
-//   [1-3]          range — expanded into 1, 2, 3
-//   [Source 1]     prose form — caught and normalized to [1]
-const CITE_OPEN = "\uE000";
-const CITE_CLOSE = "\uE001";
-const CITE_PLACEHOLDER_RE = new RegExp(
-  `${CITE_OPEN}(\\d+)${CITE_CLOSE}`,
-  "g",
-);
-
-function expandRangeOrList(inner: string): number[] {
-  const out: number[] = [];
-  for (const part of inner.split(/\s*,\s*/)) {
-    const range = part.match(/^(\d+)\s*[-–—]\s*(\d+)$/);
-    if (range) {
-      const a = Number(range[1]);
-      const b = Number(range[2]);
-      if (a <= b && b - a < 20) {
-        for (let i = a; i <= b; i++) out.push(i);
-        continue;
-      }
-    }
-    const single = part.match(/^\d+$/);
-    if (single) out.push(Number(single[0]));
-  }
-  return out;
-}
-
-function preprocessCitations(text: string): string {
-  return text.replace(
-    /\[\s*(?:source|src|kaynak)?\s*:?\s*([\d,\s\-–—]+)\s*\]/gi,
-    (_match, inner) => {
-      const nums = expandRangeOrList(inner);
-      if (nums.length === 0) return _match;
-      return nums.map((n) => `${CITE_OPEN}${n}${CITE_CLOSE}`).join("");
-    },
-  );
-}
 
 export function AIAnswer({
   answer,
@@ -207,7 +123,7 @@ export function AIAnswer({
         key={key}
         number={num}
         href={href}
-        tooltip={source ? <CitationTooltipContent source={source.chunk} /> : undefined}
+        tooltip={source ? <CitationSourceTooltip source={source.chunk} /> : undefined}
         target="_blank"
         rel="noopener"
         onClick={(e) => {
@@ -222,41 +138,15 @@ export function AIAnswer({
     );
   };
 
-  // Walk a piece of text and replace each placeholder with a chip.
-  const renderText = (text: string, baseKey: string): React.ReactNode[] => {
-    // Splitting with a capture group puts captured groups at odd indices.
-    const parts = text.split(CITE_PLACEHOLDER_RE);
-    return parts.map((part, i) => {
-      if (i % 2 === 1) {
-        return makeChip(parseInt(part, 10), `${baseKey}-c${i}`);
-      }
-      return part ? <span key={`${baseKey}-t${i}`}>{part}</span> : null;
-    });
-  };
-
-  // Recursively walk a React children tree and run renderText on every
-  // string node. Earlier the code only handled the case where children was
-  // a single string and silently fell through for paragraphs that contained
-  // any inline markup (em, strong, etc.) — those paragraphs lost their
-  // citation chips entirely.
+  // Recursively walk a React children tree and swap citation
+  // placeholders for chips — shared walker in @/lib/citations (handles
+  // strings, arrays, and arbitrary inline-element nesting; the
+  // fallthrough map below covers node types without a styled handler,
+  // which is what used to leak NOGLYPH tofu).
   const renderChildren = (
     children: React.ReactNode,
     baseKey: string,
-  ): React.ReactNode => {
-    if (typeof children === "string") {
-      return renderText(children, baseKey);
-    }
-    if (Array.isArray(children)) {
-      return children.map((c, i) => renderChildren(c, `${baseKey}-${i}`));
-    }
-    if (React.isValidElement(children)) {
-      const el = children as React.ReactElement<{ children?: React.ReactNode }>;
-      return React.cloneElement(el, {
-        children: renderChildren(el.props.children, `${baseKey}-x`),
-      });
-    }
-    return children;
-  };
+  ): React.ReactNode => renderCitedChildren(children, makeChip, baseKey);
 
   return (
     <motion.div
@@ -302,7 +192,7 @@ export function AIAnswer({
         }}
       >
         <ReactMarkdown
-          components={{
+          components={withCitationFallthrough({
             p: ({ children, node }) => {
               // Drop cap the first paragraph only
               const isFirst =
@@ -385,7 +275,7 @@ export function AIAnswer({
                 {renderChildren(children, "code")}
               </code>
             ),
-          }}
+          }, makeChip)}
         >
           {preprocessCitations(answer)}
         </ReactMarkdown>
@@ -493,12 +383,14 @@ export function AIAnswer({
                       className="font-semibold text-foreground group-hover:text-primary"
                       style={{ fontFamily: "var(--font-display)" }}
                     >
-                      {s.chunk.title}
+                      {cleanSourceTitle(s.chunk.title)}
                     </div>
-                    {s.chunk.author_speaker && (
+                    {(s.chunk.author_speaker ||
+                      formatSourceLocator(s.chunk).length > 0) && (
                       <div className="text-muted-foreground text-[11px]">
-                        {s.chunk.author_speaker}
-                        {s.chunk.page_number != null && ` · p. ${s.chunk.page_number}`}
+                        {[s.chunk.author_speaker, ...formatSourceLocator(s.chunk)]
+                          .filter(Boolean)
+                          .join(" · ")}
                       </div>
                     )}
                     <p className="mt-1 text-muted-foreground/80 text-[11px] leading-relaxed">

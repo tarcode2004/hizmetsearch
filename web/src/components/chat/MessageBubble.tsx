@@ -20,9 +20,18 @@ import { cn, detectArabicScript, truncate } from "@/lib/utils";
 import { LanguageBadge } from "@/components/shared/LanguageBadge";
 import { FeedbackWidget } from "@/components/shared/FeedbackWidget";
 import { CitationChip } from "@/components/ornaments/CitationChip";
+import { CitationSourceTooltip } from "@/components/ornaments/CitationSourceTooltip";
 import type { ChunkResult, Message, ResearchStep } from "@/lib/types";
 import { useTranslation } from "@/lib/i18n/I18nProvider";
 import { buildSourceViewerUrl } from "@/lib/source-viewer";
+import {
+  cleanSourceTitle,
+  mergeSourceEntries,
+  preprocessCitations,
+  renderCitedChildren,
+  resolveSourceDisplay,
+  withCitationFallthrough,
+} from "@/lib/citations";
 import { fadeInUp, spring } from "@/lib/motion";
 
 interface MessageBubbleProps {
@@ -31,102 +40,21 @@ interface MessageBubbleProps {
   onCitationSelect?: (source: ChunkResult) => void;
 }
 
-// Citation preprocessing — same trick as AIAnswer. CommonMark eats `[N]`
-// as a shortcut reference link, so we replace `[N]` with private-use
-// Unicode placeholders BEFORE handing the text to ReactMarkdown, then
-// swap them back into chips after parsing.
-//
-// We accept several LLM-generated citation shapes:
-//   [1]            single
-//   [1][2]         adjacent (handled by chained matches)
-//   [1, 2, 3]      comma list — expanded into 3 separate chips
-//   [1-3]          range — expanded into 1, 2, 3
-//   [Source 1]     prose form — caught and normalized to [1]
-const CITE_OPEN = "\uE000";
-const CITE_CLOSE = "\uE001";
-const CITE_PLACEHOLDER_RE = new RegExp(
-  `${CITE_OPEN}(\\d+)${CITE_CLOSE}`,
-  "g",
-);
-
-function expandRangeOrList(inner: string): number[] {
-  const out: number[] = [];
-  for (const part of inner.split(/\s*,\s*/)) {
-    const range = part.match(/^(\d+)\s*[-–—]\s*(\d+)$/);
-    if (range) {
-      const a = Number(range[1]);
-      const b = Number(range[2]);
-      if (a <= b && b - a < 20) {
-        for (let i = a; i <= b; i++) out.push(i);
-        continue;
-      }
-    }
-    const single = part.match(/^\d+$/);
-    if (single) out.push(Number(single[0]));
-  }
-  return out;
-}
-
-function preprocessCitations(text: string): string {
-  // Match a bracketed citation that contains only numbers, commas, and
-  // dash-style range separators. Optionally preceded by "Source", "Src",
-  // "Kaynak", "Source:" etc. so prose forms get normalized too.
-  return text.replace(
-    /\[\s*(?:source|src|kaynak)?\s*:?\s*([\d,\s\-–—]+)\s*\]/gi,
-    (_match, inner) => {
-      const nums = expandRangeOrList(inner);
-      if (nums.length === 0) return _match;
-      return nums.map((n) => `${CITE_OPEN}${n}${CITE_CLOSE}`).join("");
-    },
-  );
-}
-
-function CitationTooltipContent({ source }: { source: ChunkResult }) {
-  const isArabic = detectArabicScript(source.text);
-  const meta: string[] = [];
-  if (source.author_speaker) meta.push(source.author_speaker);
-  if (source.page_number != null) meta.push(`p. ${source.page_number}`);
-  else if (source.timestamp_start != null) {
-    const m = Math.floor(source.timestamp_start / 60);
-    const s = Math.floor(source.timestamp_start % 60).toString().padStart(2, "0");
-    meta.push(`${m}:${s}`);
-  }
-  return (
-    <div className="w-[300px] p-3">
-      <p
-        className="text-[13px] font-semibold text-foreground leading-tight"
-        style={{ fontFamily: "var(--font-display)" }}
-      >
-        {source.title}
-      </p>
-      {meta.length > 0 && (
-        <p className="mt-0.5 text-[10px] text-muted-foreground">
-          {meta.join(" · ")}
-        </p>
-      )}
-      <p
-        dir={isArabic ? "rtl" : "ltr"}
-        className={cn(
-          "mt-2 text-[11px] leading-snug text-foreground/75 line-clamp-4",
-          isArabic && "font-[var(--font-arabic)] text-[13px]"
-        )}
-      >
-        {truncate(source.text, 220)}
-      </p>
-    </div>
-  );
-}
-
 export function MessageBubble({ message, onCitationSelect }: MessageBubbleProps) {
   const { t } = useTranslation();
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const isUser = message.role === "user";
   const isArabic = detectArabicScript(message.content);
 
-  // Build a chip element for one citation number.
+  // Build a chip element for one citation number. `resolveSourceDisplay`
+  // backfills title/author from a same-doc sibling entry when the
+  // research loop persisted a duplicate-edition artifact with junk
+  // metadata (observed: a second entry titled "RHD-1 -").
   const makeChip = (num: number, key: string) => {
-    const src = message.sources?.[num - 1];
-    const href = src ? buildSourceViewerUrl(src) : "#";
+    const src = resolveSourceDisplay(message.sources, num);
+    // Research sources carry no source_url; /source/:docId falls back to
+    // a citation-details view fed entirely by these query params.
+    const href = src ? buildSourceViewerUrl(src) : undefined;
     const handleClick =
       src && onCitationSelect
         ? (e: React.MouseEvent) => {
@@ -140,47 +68,21 @@ export function MessageBubble({ message, onCitationSelect }: MessageBubbleProps)
         number={num}
         href={href}
         onClick={handleClick}
-        tooltip={src ? <CitationTooltipContent source={src} /> : undefined}
+        tooltip={src ? <CitationSourceTooltip source={src} /> : undefined}
         target={onCitationSelect ? undefined : "_blank"}
         rel={onCitationSelect ? undefined : "noopener"}
       />
     );
   };
 
-  // Replace placeholder-wrapped citation numbers with chips inside a
-  // string. Used by `renderChildren` below.
-  const renderText = (text: string, baseKey: string): React.ReactNode[] => {
-    const parts = text.split(CITE_PLACEHOLDER_RE);
-    return parts.map((part, i) => {
-      if (i % 2 === 1) {
-        return makeChip(parseInt(part, 10), `${baseKey}-c${i}`);
-      }
-      return part ? <span key={`${baseKey}-t${i}`}>{part}</span> : null;
-    });
-  };
-
-  // Recursively walk a React children tree, replacing placeholders in any
-  // string node with chips. Handles arrays of mixed text + inline markup
-  // (em, strong, code, etc.) — earlier the citation logic only fired for
-  // plain-string children and silently dropped chips inside formatted runs.
+  // Recursively walk a React children tree and swap citation
+  // placeholders for chips — shared walker in @/lib/citations. Node
+  // types without a styled handler below are covered by the
+  // withCitationFallthrough map, which is what used to leak NOGLYPH.
   const renderChildren = (
     children: React.ReactNode,
     baseKey: string,
-  ): React.ReactNode => {
-    if (typeof children === "string") {
-      return renderText(children, baseKey);
-    }
-    if (Array.isArray(children)) {
-      return children.map((c, i) => renderChildren(c, `${baseKey}-${i}`));
-    }
-    if (React.isValidElement(children)) {
-      const el = children as React.ReactElement<{ children?: React.ReactNode }>;
-      return React.cloneElement(el, {
-        children: renderChildren(el.props.children, `${baseKey}-x`),
-      });
-    }
-    return children;
-  };
+  ): React.ReactNode => renderCitedChildren(children, makeChip, baseKey);
 
   if (isUser) {
     return (
@@ -269,7 +171,7 @@ export function MessageBubble({ message, onCitationSelect }: MessageBubbleProps)
             />
           )}
           <ReactMarkdown
-            components={{
+            components={withCitationFallthrough({
               p: ({ children }) => (
                 <p className="mb-3 last:mb-0">
                   {renderChildren(children, "p")}
@@ -348,7 +250,7 @@ export function MessageBubble({ message, onCitationSelect }: MessageBubbleProps)
                   {renderChildren(children, "a")}
                 </a>
               ),
-            }}
+            }, makeChip)}
           >
             {preprocessCitations(message.content)}
           </ReactMarkdown>
@@ -378,43 +280,63 @@ export function MessageBubble({ message, onCitationSelect }: MessageBubbleProps)
                 transition={spring.gentle}
                 className="mt-2 grid gap-1.5"
               >
-                {message.sources.map((src, i) => (
-                  <a
-                    key={src.chunk_id}
-                    href={buildSourceViewerUrl(src)}
-                    target={onCitationSelect ? undefined : "_blank"}
-                    rel={onCitationSelect ? undefined : "noopener"}
-                    onClick={
-                      onCitationSelect
-                        ? (e) => {
-                            e.preventDefault();
-                            onCitationSelect(src);
-                          }
-                        : undefined
-                    }
-                    className="group flex items-start gap-2 rounded-lg border border-border/50 bg-card/60 px-3 py-2 text-[11px] no-underline text-foreground hover:bg-card hover:border-primary/20 transition-all"
-                  >
-                    <CitationChip number={i + 1} className="pointer-events-none shrink-0" />
-                    <div className="min-w-0 flex-1">
-                      <span
-                        className="font-semibold group-hover:text-primary transition-colors"
-                        style={{ fontFamily: "var(--font-display)" }}
-                      >
-                        {src.title}
+                {/* Research-loop entries citing the same work (same
+                    doc_id) merge into one row carrying every citation
+                    number and the union of locators; classic retrieval
+                    chunks are never merged. */}
+                {mergeSourceEntries(message.sources).map((entry) => {
+                  const src = entry.source;
+                  return (
+                    <a
+                      key={src.chunk_id}
+                      href={buildSourceViewerUrl(src)}
+                      target={onCitationSelect ? undefined : "_blank"}
+                      rel={onCitationSelect ? undefined : "noopener"}
+                      onClick={
+                        onCitationSelect
+                          ? (e) => {
+                              e.preventDefault();
+                              onCitationSelect(src);
+                            }
+                          : undefined
+                      }
+                      className="group flex items-start gap-2 rounded-lg border border-border/50 bg-card/60 px-3 py-2 text-[11px] no-underline text-foreground hover:bg-card hover:border-primary/20 transition-all"
+                    >
+                      <span className="flex shrink-0 items-center gap-0.5">
+                        {entry.numbers.map((n) => (
+                          <CitationChip
+                            key={n}
+                            number={n}
+                            className="pointer-events-none"
+                          />
+                        ))}
                       </span>
-                      {src.author_speaker && (
-                        <span className="text-muted-foreground"> — {src.author_speaker}</span>
-                      )}
-                      <p className="mt-0.5 text-muted-foreground leading-relaxed">
-                        {truncate(src.text, 120)}
-                      </p>
-                      <div className="mt-1">
-                        <LanguageBadge language={src.language} />
+                      <div className="min-w-0 flex-1">
+                        <span
+                          className="font-semibold group-hover:text-primary transition-colors"
+                          style={{ fontFamily: "var(--font-display)" }}
+                        >
+                          {cleanSourceTitle(src.title)}
+                        </span>
+                        {src.author_speaker && (
+                          <span className="text-muted-foreground"> — {src.author_speaker}</span>
+                        )}
+                        {entry.locators.length > 0 && (
+                          <p className="mt-0.5 text-[10px] uppercase tracking-[0.05em] text-muted-foreground/80">
+                            {entry.locators.join("; ")}
+                          </p>
+                        )}
+                        <p className="mt-0.5 text-muted-foreground leading-relaxed">
+                          {truncate(src.text, 120)}
+                        </p>
+                        <div className="mt-1">
+                          <LanguageBadge language={src.language} />
+                        </div>
                       </div>
-                    </div>
-                    <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground/40 opacity-0 group-hover:opacity-100 transition-opacity" />
-                  </a>
-                ))}
+                      <ExternalLink className="h-3 w-3 shrink-0 text-muted-foreground/40 opacity-0 group-hover:opacity-100 transition-opacity" />
+                    </a>
+                  );
+                })}
               </motion.div>
             )}
           </div>
