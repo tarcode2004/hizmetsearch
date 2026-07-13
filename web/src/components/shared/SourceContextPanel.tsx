@@ -10,7 +10,8 @@ import { useAction } from "convex/react";
 import { api } from "@convex/api";
 import { ChevronUp, ChevronDown, Loader2 } from "lucide-react";
 import { cn, detectArabicScript } from "@/lib/utils";
-import { findNormalizedRange } from "@/lib/text-match";
+import { findNormalizedRange, snapToWordBounds } from "@/lib/text-match";
+import { cleanCorpusArtifacts } from "@/lib/corpus-clean";
 import { useTranslation } from "@/lib/i18n/I18nProvider";
 import { BACKEND_ENABLED } from "@/lib/env";
 
@@ -189,14 +190,27 @@ function LiveSourceContextPanel({
     );
   }
 
-  const stitched = windows.map((w) => w.text).join("");
-  const highlight = findNormalizedRange(stitched, chunkText);
+  // Repair PDF-extraction artifacts ("# " line markers, split drop-caps)
+  // for DISPLAY. The needle gets the same treatment so matching still
+  // works; highlight bounds snap outward so char-window chunk cuts don't
+  // sever words ("ECOND SUBTLETY…").
+  const rawStitched = windows.map((w) => w.text).join("");
+  const stitched = cleanCorpusArtifacts(rawStitched);
+  const artifactsRepaired = stitched !== rawStitched;
+  const rawHighlight = findNormalizedRange(
+    stitched,
+    cleanCorpusArtifacts(chunkText),
+  );
+  const highlight = rawHighlight && snapToWordBounds(stitched, rawHighlight);
   const isArabic = detectArabicScript(chunkText || stitched);
   const orderingConfident = windows.every((w) => w.orderingConfident);
 
   // Absolute passage starts within the stitched text, for page markers.
+  // Artifact repair shifts offsets, so markers only render for clean
+  // works (where the text is byte-identical and offsets stay valid) —
+  // the artifact-affected works carry no page numbers anyway.
   const pageMarks: Array<{ at: number; page: number }> = [];
-  {
+  if (!artifactsRepaired) {
     let prefix = 0;
     let lastPage: number | null = null;
     for (const w of windows) {

@@ -80,3 +80,24 @@ export function findNormalizedRange(
   }
   return null;
 }
+
+const WORD_CHAR = /[\p{L}\p{N}]/u;
+
+/**
+ * Expand a highlight range outward to word boundaries. Chunks are cut by
+ * char windows and can start/end mid-word ("ECOND SUBTLETY…"); a highlight
+ * that severs a word reads like a rendering bug.
+ */
+export function snapToWordBounds(
+  text: string,
+  range: { start: number; end: number },
+): { start: number; end: number } {
+  let { start, end } = range;
+  while (start > 0 && WORD_CHAR.test(text[start - 1]) && WORD_CHAR.test(text[start])) {
+    start--;
+  }
+  while (end < text.length && WORD_CHAR.test(text[end]) && WORD_CHAR.test(text[end - 1])) {
+    end++;
+  }
+  return { start, end };
+}
