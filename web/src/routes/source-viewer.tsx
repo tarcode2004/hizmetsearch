@@ -13,6 +13,7 @@ import { VideoViewer } from "@/components/viewer/VideoViewer";
 import { ViewerLayout } from "@/components/viewer/ViewerLayout";
 import { OutlinePanel, type OutlineEntry } from "@/components/viewer/OutlinePanel";
 import { ChunkPanel } from "@/components/viewer/ChunkPanel";
+import { SourceContextPanel } from "@/components/shared/SourceContextPanel";
 
 /**
  * Standalone source viewer route. Opens in a new tab when a user clicks
@@ -66,8 +67,33 @@ export function SourceViewerPage() {
   // remounts the iframe and re-runs the in-PDF text search even when
   // page + searchText are unchanged.
   const [jumpNonce, setJumpNonce] = useState(0);
+  // Physical PDF page that actually contains the chunk text, resolved by
+  // scanning the text layer. The chunk's stored `page_number` is the
+  // PRINTED page, which is offset from the physical page by front matter —
+  // trusting it directly lands the user in the wrong place.
+  const [resolvedPage, setResolvedPage] = useState<number | null>(null);
 
   const audioSeekRef = useRef<((t: number) => void) | null>(null);
+
+  // Locate the chunk's physical page on load (printed page as scan hint),
+  // then jump there. This is what makes "open in viewer" land on the
+  // right part of the book instead of page 1 / the printed-page guess.
+  useEffect(() => {
+    if (kind !== "pdf" || !meta.sourceUrl || !meta.chunkText) return;
+    let cancelled = false;
+    findPageWithText(meta.sourceUrl, meta.chunkText, meta.page ?? undefined)
+      .then((p) => {
+        if (cancelled || p == null) return;
+        setResolvedPage(p);
+        setCurrentPage(p);
+        setJumpNonce((n) => n + 1);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [kind, meta.sourceUrl, meta.chunkText, meta.page]);
 
   // Load PDF metadata on mount
   useEffect(() => {
@@ -161,29 +187,23 @@ export function SourceViewerPage() {
       language={meta.language}
       onJumpToChunk={() => {
         if (kind === "pdf") {
-          console.log("[jump] click", {
-            page: meta.page,
-            hasUrl: !!meta.sourceUrl,
-            chunkTextLen: meta.chunkText?.length ?? 0,
-            currentPage,
-          });
-          if (meta.page != null) {
-            // Stored page number on the chunk — trust it.
-            setCurrentPage(meta.page);
+          const target = resolvedPage ?? meta.page;
+          if (target != null) {
+            setCurrentPage(target);
             setJumpNonce((n) => n + 1);
           } else if (meta.sourceUrl && meta.chunkText) {
-            // No page on the chunk — scan the PDF text via pdf.js to
-            // locate the page that contains the snippet, then jump.
+            // Resolution hasn't landed yet (or found nothing) — scan the
+            // PDF text layer now and jump to whatever page contains the
+            // chunk snippet.
             findPageWithText(meta.sourceUrl, meta.chunkText)
               .then((p) => {
-                console.log("[jump] findPageWithText resolved", { foundPage: p });
-                if (p) setCurrentPage(p);
+                if (p) {
+                  setResolvedPage(p);
+                  setCurrentPage(p);
+                }
                 setJumpNonce((n) => n + 1);
               })
-              .catch((e) => {
-                console.warn("[jump] findPageWithText threw", e);
-                setJumpNonce((n) => n + 1);
-              });
+              .catch(() => setJumpNonce((n) => n + 1));
           } else {
             setJumpNonce((n) => n + 1);
           }
@@ -386,20 +406,29 @@ function CitationDetails({ meta }: { meta: CitationMeta }) {
             <div className="mb-2 text-[10px] uppercase tracking-[0.08em] text-muted-foreground">
               {quoteLabel}
             </div>
-            <blockquote
-              dir={isArabic ? "rtl" : "ltr"}
-              className={cn(
-                "rounded-xl border border-border/60 bg-card/60 p-5 text-[15px] leading-relaxed text-foreground/85",
-                "border-l-4 border-l-primary/50",
-                isArabic && "font-[var(--font-arabic)] text-base"
-              )}
-            >
-              {meta.chunkText}
-            </blockquote>
+            <SourceContextPanel
+              docId={meta.docId}
+              chunkText={meta.chunkText}
+              passageStart={meta.passageStart}
+              className="max-h-[65vh] text-[15px]"
+              placeholder={
+                <>
+                  <blockquote
+                    dir={isArabic ? "rtl" : "ltr"}
+                    className={cn(
+                      "rounded-xl border border-border/60 bg-card/60 p-5 text-[15px] leading-relaxed text-foreground/85",
+                      "border-l-4 border-l-primary/50",
+                      isArabic && "font-[var(--font-arabic)] text-base"
+                    )}
+                  >
+                    {meta.chunkText}
+                  </blockquote>
+                  <p className="mt-4 text-xs text-muted-foreground">{note}</p>
+                </>
+              }
+            />
           </div>
         )}
-
-        <p className="mt-6 text-xs text-muted-foreground">{note}</p>
       </div>
     </div>
   );

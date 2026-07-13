@@ -233,10 +233,14 @@ export function PdfViewer({
 
 /**
  * Scan a PDF page-by-page until we find one whose extracted text
- * contains a snippet from the chunk. Used by the viewer when a chunk
- * has no `page_number` recorded (audio backfills, OCR with bad
- * pagination, older ingestion runs) so we can still jump the user
- * to the right page on click. Returns null if not found.
+ * contains a snippet from the chunk, returning the PHYSICAL page number
+ * (what `#page=` wants). Returns null if not found.
+ *
+ * `hintPage` is the chunk's stored printed-page number: physical page =
+ * printed page + front-matter offset, so we scan a window starting just
+ * before the hint and extending well past it before falling back to a
+ * full sweep. This keeps the common case (books with page numbers) to a
+ * handful of getTextContent calls instead of hundreds.
  *
  * Strategy: extract several distinctive ~40-char substrings from the
  * chunk (start, mid, last identifiable phrase) and try each. PDF text
@@ -249,9 +253,9 @@ export function PdfViewer({
 export async function findPageWithText(
   sourceUrl: string,
   snippet: string,
+  hintPage?: number,
 ): Promise<number | null> {
   if (!snippet || snippet.length < 12) return null;
-  console.log("[findPageWithText] start", { url: sourceUrl, snippetLen: snippet.length });
   try {
     const pdfjsLib = await import("pdfjs-dist");
     const workerSrc = (
@@ -259,7 +263,6 @@ export async function findPageWithText(
     ).default;
     pdfjsLib.GlobalWorkerOptions.workerSrc = workerSrc;
     const doc = await pdfjsLib.getDocument(sourceUrl).promise;
-    console.log("[findPageWithText] PDF loaded", { numPages: doc.numPages });
 
     // Aggressive normalization: strip everything except letters/digits
     // and lowercase. This tolerates whitespace differences, punctuation
@@ -289,9 +292,23 @@ export async function findPageWithText(
       const end = Math.min(start + probeLen, normSnippet.length);
       if (end - start >= 30) probes.push(normSnippet.slice(start, end));
     }
-    console.log("[findPageWithText] probes", probes);
 
-    for (let p = 1; p <= doc.numPages; p++) {
+    // Scan order: hint window first (printed → physical offset is almost
+    // always non-negative, so bias forward), then everything else.
+    const order: number[] = [];
+    const seen = new Set<number>();
+    const push = (p: number) => {
+      if (p >= 1 && p <= doc.numPages && !seen.has(p)) {
+        seen.add(p);
+        order.push(p);
+      }
+    };
+    if (hintPage != null && Number.isFinite(hintPage)) {
+      for (let p = hintPage - 3; p <= hintPage + 90; p++) push(p);
+    }
+    for (let p = 1; p <= doc.numPages; p++) push(p);
+
+    for (const p of order) {
       const page = await doc.getPage(p);
       const content = await page.getTextContent();
       const pageText = norm(
@@ -301,15 +318,13 @@ export async function findPageWithText(
       );
       for (const probe of probes) {
         if (pageText.includes(probe)) {
-          console.log("[findPageWithText] hit", { page: p, probeLen: probe.length });
           return p;
         }
       }
     }
-    console.log("[findPageWithText] no match across", doc.numPages, "pages");
     return null;
   } catch (err) {
-    console.warn("[findPageWithText] failed:", err);
+    console.warn("findPageWithText failed:", err);
     return null;
   }
 }

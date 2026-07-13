@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { cn, detectArabicScript, userFacingError } from "@/lib/utils";
 import { buildSourceViewerUrl } from "@/lib/source-viewer";
+import { SourceContextPanel } from "@/components/shared/SourceContextPanel";
 import { BACKEND_ENABLED } from "@/lib/env";
 import { downloadConversation } from "@/lib/chat/exportConversation";
 import { captureError } from "@/lib/observability";
@@ -662,15 +663,23 @@ function ChatSourcePreview({ source }: { source: ChunkResult }) {
           </p>
         )}
       </div>
-      <div
-        dir={isArabic ? "rtl" : "ltr"}
-        className={cn(
-          "rounded-lg border border-border/60 bg-background/50 p-3 text-[13px] leading-relaxed text-foreground/85",
-          isArabic && "font-[var(--font-arabic)] text-base"
-        )}
-      >
-        {source.parent_text ?? source.text}
-      </div>
+      <SourceContextPanel
+        docId={source.doc_id}
+        chunkText={source.text}
+        passageStart={source.passage_start ?? undefined}
+        className="max-h-[62vh]"
+        placeholder={
+          <div
+            dir={isArabic ? "rtl" : "ltr"}
+            className={cn(
+              "rounded-lg border border-border/60 bg-background/50 p-3 text-[13px] leading-relaxed text-foreground/85",
+              isArabic && "font-[var(--font-arabic)] text-base"
+            )}
+          >
+            {source.parent_text ?? source.text}
+          </div>
+        }
+      />
       <a
         href={buildSourceViewerUrl(source)}
         target="_blank"

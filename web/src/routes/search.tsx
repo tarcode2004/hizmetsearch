@@ -21,6 +21,7 @@ import {
 } from "@/lib/search/SearchHistoryProvider";
 import { cn, detectArabicScript } from "@/lib/utils";
 import { buildSourceViewerUrl } from "@/lib/source-viewer";
+import { SourceContextPanel } from "@/components/shared/SourceContextPanel";
 import { BACKEND_ENABLED } from "@/lib/env";
 import { captureError } from "@/lib/observability";
 
@@ -739,18 +740,26 @@ function PreviewPanel({
           </p>
         )}
       </div>
-      <div
-        ref={containerRef}
-        dir={isArabic ? "rtl" : "ltr"}
-        className={cn(
-          "max-h-[55vh] overflow-y-auto rounded-lg border border-border/60 bg-background/50 p-3 text-[13px] leading-relaxed text-foreground/85",
-          isArabic && "font-[var(--font-arabic)] text-base"
-        )}
-      >
-        {highlighted
-          ? renderInlineBold(highlighted, firstStrongRef)
-          : passage}
-      </div>
+      <SourceContextPanel
+        docId={chunk.doc_id}
+        chunkText={chunk.text}
+        passageStart={chunk.passage_start ?? undefined}
+        className="max-h-[62vh]"
+        placeholder={
+          <div
+            ref={containerRef}
+            dir={isArabic ? "rtl" : "ltr"}
+            className={cn(
+              "max-h-[55vh] overflow-y-auto rounded-lg border border-border/60 bg-background/50 p-3 text-[13px] leading-relaxed text-foreground/85",
+              isArabic && "font-[var(--font-arabic)] text-base"
+            )}
+          >
+            {highlighted
+              ? renderInlineBold(highlighted, firstStrongRef)
+              : passage}
+          </div>
+        }
+      />
       <a
         href={buildSourceViewerUrl(chunk)}
         target="_blank"

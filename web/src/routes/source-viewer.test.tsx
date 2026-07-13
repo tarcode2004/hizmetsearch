@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { ConvexProvider, ConvexReactClient } from "convex/react";
 import { I18nProvider } from "@/lib/i18n/I18nProvider";
 import type { ChunkResult } from "@/lib/types";
 import { buildSourceViewerUrl } from "@/lib/source-viewer";
@@ -37,15 +38,22 @@ const RESEARCH_SOURCE: ChunkResult = {
   passage_end: 5,
 };
 
+// The page mounts SourceContextPanel (useAction), which needs a Convex
+// provider in the tree. The client never completes a request in jsdom —
+// the panel falls back to its placeholder, which is what we assert on.
+const convexStub = new ConvexReactClient("https://example.convex.cloud");
+
 function renderViewerAt(url: string) {
   return render(
-    <I18nProvider>
-      <MemoryRouter initialEntries={[url]}>
-        <Routes>
-          <Route path="/source/:docId" element={<SourceViewerPage />} />
-        </Routes>
-      </MemoryRouter>
-    </I18nProvider>,
+    <ConvexProvider client={convexStub}>
+      <I18nProvider>
+        <MemoryRouter initialEntries={[url]}>
+          <Routes>
+            <Route path="/source/:docId" element={<SourceViewerPage />} />
+          </Routes>
+        </MemoryRouter>
+      </I18nProvider>
+    </ConvexProvider>,
   );
 }
 
