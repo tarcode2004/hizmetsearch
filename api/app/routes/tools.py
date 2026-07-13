@@ -11,6 +11,9 @@ POST /tools/read_document    — sequential reading with char-budget
                                pagination (passages reach ~200KB)
 POST /tools/search_corpus    — Qdrant hybrid semantic search (wraps the
                                existing retrieval pipeline)
+POST /tools/locate_passage   — exact char position of a retrieval chunk
+                               inside one work (fast normalized scan;
+                               feeds the viewer's read-in-context panel)
 
 All endpoints are POST/JSON and bearer-authed by the app-level middleware
 in app.main, with a modest per-token rate limit (TOOLS_RATE_LIMIT) purely
@@ -28,6 +31,7 @@ from pydantic import BaseModel, Field
 
 from app.db import fetch_all
 from app.deps import get_retrieval_pipeline
+from app.locate import locate_in_text
 from app.ratelimit import TOOLS_RATE_LIMIT, limiter
 from app.routes.search import CATEGORY_SPECS, _chunk_to_response
 from app.schemas import SearchResponse, SearchResultItem
@@ -459,6 +463,114 @@ def get_work_outline(request: Request, body: WorkOutlineRequest) -> WorkOutlineR
         passage_map=[OutlineEntry(**p) for p in passage_map],
         passage_map_offset=body.offset,
         passage_map_truncated=truncated,
+    )
+
+
+# ── locate_passage ───────────────────────────────────────────────────────
+
+
+class LocatePassageRequest(BaseModel):
+    doc_id: str
+    # The retrieval chunk's text (or a prefix of it). Normalized matching
+    # tolerates whitespace/quote/case differences vs the stored passage.
+    text: str = Field(..., min_length=10, max_length=2000)
+
+
+class LocatePassageResponse(BaseModel):
+    found: bool
+    ordering: Optional[int] = None
+    page_number: Optional[int] = None
+    # Global char offset (within the work's virtual concatenation — see
+    # textwindow.SEPARATOR) of the passage start and of the match itself.
+    passage_char_start: Optional[int] = None
+    match_char_offset: Optional[int] = None
+    total_chars: int
+    ordering_confident: bool
+    elapsed_ms: float
+
+
+@router.post("/locate_passage", response_model=LocatePassageResponse)
+@limiter.limit(TOOLS_RATE_LIMIT)
+def locate_passage(
+    request: Request, body: LocatePassageRequest
+) -> LocatePassageResponse:
+    """Find WHERE a retrieval chunk sits inside one work.
+
+    The viewer's "read in context" panel needs a char anchor for
+    read_document windows. BM25 search_text can locate the passage but
+    costs seconds per call (corpus-wide scoring, no top-k pushdown with
+    the works join); a normalized linear scan over ONE work's passages
+    (typically well under 1 MB, colocated Postgres) takes milliseconds
+    and returns an EXACT char offset — even deep inside a 200KB
+    transcript passage.
+    """
+    t0 = time.perf_counter()
+    works = fetch_all(
+        "SELECT doc_id, ordering_confident FROM works WHERE doc_id = %s",
+        (body.doc_id,),
+    )
+    if not works:
+        raise HTTPException(status_code=404, detail=f"Unknown doc_id: {body.doc_id}")
+    ordering_confident = works[0]["ordering_confident"]
+
+    sep_len = len(SEPARATOR)
+    cursor = 0  # global char offset of the passage being scanned
+    scanned = 0
+    total_chars = 0
+    match: Optional[dict] = None
+
+    PAGE = 200
+    offset = 0
+    while True:
+        rows = fetch_all(
+            """
+            SELECT ordering, page_number, text, length(text) AS chars
+            FROM passages WHERE work_id = %s
+            ORDER BY ordering LIMIT %s OFFSET %s
+            """,
+            (body.doc_id, PAGE, offset),
+        )
+        if not rows:
+            break
+        for row in rows:
+            passage_start = cursor + (sep_len if scanned > 0 else 0)
+            if match is None:
+                pos = locate_in_text(row["text"], body.text)
+                if pos is not None:
+                    match = {
+                        "ordering": row["ordering"],
+                        "page_number": row["page_number"],
+                        "passage_char_start": passage_start,
+                        "match_char_offset": passage_start + pos,
+                    }
+            cursor = passage_start + row["chars"]
+            scanned += 1
+        total_chars = cursor
+        # Keep walking after a match only to finish total_chars cheaply?
+        # No — one aggregate query is cheaper than scanning remaining text.
+        if match is not None:
+            agg = fetch_all(
+                """
+                SELECT coalesce(sum(length(text)), 0) AS chars, count(*) AS n
+                FROM passages WHERE work_id = %s
+                """,
+                (body.doc_id,),
+            )[0]
+            total_chars = agg["chars"] + sep_len * max(0, agg["n"] - 1)
+            break
+        offset += PAGE
+
+    elapsed_ms = (time.perf_counter() - t0) * 1000
+    _capture(
+        request, "locate_passage", elapsed_ms,
+        found=match is not None, passages_scanned=scanned,
+    )
+    return LocatePassageResponse(
+        found=match is not None,
+        **(match or {}),
+        total_chars=total_chars,
+        ordering_confident=ordering_confident,
+        elapsed_ms=round(elapsed_ms, 2),
     )
 
 

@@ -64,7 +64,7 @@ function LiveSourceContextPanel({
   className,
 }: SourceContextPanelProps) {
   const { locale } = useTranslation();
-  const getContext = useAction(api.actions.sourceContext.getContext);
+  const getContext = useAction(api.sourceContext.getContext);
 
   const [windows, setWindows] = useState<ContextWindow[]>([]);
   const [status, setStatus] = useState<"loading" | "ready" | "unavailable">(
