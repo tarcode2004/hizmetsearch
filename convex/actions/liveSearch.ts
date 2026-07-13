@@ -32,19 +32,19 @@ import { cerebrasComplete } from "../lib/cerebras";
 
 const GEMINI_MODEL = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
 const EXPAND_MODEL = "gemini-2.5-flash-lite";
-// Highlight pass runs against Cerebras llama3.1-8b instead of Gemini
+// Highlight pass runs against Cerebras gemma-4-31b instead of Gemini
 // Flash Lite. Gemini Flash Lite was the dominant search-latency cost
 // (~30-60s for 18 parallel calls due to API serialization under rate
-// limits). Cerebras runs ~100-1000x faster end-to-end (verified ~36 ms
-// per call warm) and llama3.1-8b has 2k RPM / 2M TPM headroom on the
-// production tier — comfortably above 18 calls per search even at
-// hundreds of searches per minute. We deliberately do NOT use the
-// larger gpt-oss-120b here because gpt-oss is a *reasoning* model
-// that emits chain-of-thought into a separate `reasoning` field and
-// only writes the actual answer to `content` after reasoning finishes
-// — wasted compute for a simple "wrap relevant spans in **bold**"
-// formatting task.
-const HIGHLIGHT_MODEL = "llama3.1-8b" as const;
+// limits). Cerebras runs ~100-1000x faster end-to-end (verified ~0.4 s
+// per call warm). gemma-4-31b replaced llama3.1-8b when Cerebras
+// dropped it from their catalog (404 model_not_found as of 2026-07);
+// it's the only non-reasoning instruct model they currently serve.
+// We deliberately do NOT use gpt-oss-120b or zai-glm-4.7 here because
+// both are *reasoning* models that emit chain-of-thought before (or
+// instead of) the actual answer — verified zai-glm-4.7 spends its
+// entire max_tokens budget on reasoning and returns empty `content`
+// for this simple "wrap relevant spans in **bold**" formatting task.
+const HIGHLIGHT_MODEL = "gemma-4-31b" as const;
 
 const DEFAULT_TOP_K = 18;
 const PER_QUERY_TOP_K = 12;

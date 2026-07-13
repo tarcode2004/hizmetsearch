@@ -20,17 +20,20 @@ import { cerebrasComplete } from "../lib/cerebras";
 // summaries. Override via `GEMINI_MODEL` env var if you want Pro for AI mode.
 const GEMINI_MODEL = process.env.GEMINI_MODEL ?? "gemini-2.5-flash";
 
-// Highlight pass runs against Cerebras llama3.1-8b — the previous Gemini
+// Highlight pass runs against Cerebras gemma-4-31b — the previous Gemini
 // Flash Lite implementation was the dominant search-latency cost (~30-60s
 // for 18 parallel calls because Gemini API serializes under the per-project
-// concurrency limit). Cerebras runs ~100-1000x faster (verified ~36 ms per
-// call warm) and llama3.1-8b has 2k RPM / 2M TPM headroom on the production
-// tier. We deliberately avoid gpt-oss-120b for highlights — it's a reasoning
-// model that wastes compute on a simple bold-formatting task.
+// concurrency limit). Cerebras is ~100-1000x faster (verified ~0.4 s per
+// call warm). gemma-4-31b replaced llama3.1-8b when Cerebras dropped it
+// from their catalog (404 model_not_found as of 2026-07); it's the only
+// non-reasoning instruct model they currently serve. We deliberately avoid
+// gpt-oss-120b and zai-glm-4.7 for highlights — both are reasoning models
+// that burn the token budget on chain-of-thought before (or instead of)
+// emitting the simple bold-formatted passage.
 // NB: this `actions/search.ts` is the OLD blocking action; the streaming
 // pipeline lives in `actions/liveSearch.ts`. Both got patched so the swap
 // is complete regardless of which the frontend currently calls.
-const HIGHLIGHT_CEREBRAS_MODEL = "llama3.1-8b" as const;
+const HIGHLIGHT_CEREBRAS_MODEL = "gemma-4-31b" as const;
 const EXPAND_MODEL = "gemini-2.5-flash-lite";
 
 // Default surface size when the caller doesn't specify. We expand the

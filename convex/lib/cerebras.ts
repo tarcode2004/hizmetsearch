@@ -17,19 +17,22 @@
  *   npx convex env set CEREBRAS_API_KEY=csk-... --prod
  *
  * Models in use:
- *   - gpt-oss-120b: production tier, 131k context, 1k RPM, 1M TPM —
- *     the default for highlight + any other latency-sensitive call.
+ *   - gemma-4-31b: non-reasoning instruct model — the highlight-pass
+ *     model (reasoning models burn max_tokens on chain-of-thought
+ *     before emitting the formatted passage).
+ *   - gpt-oss-120b: reasoning model, 131k context — default for calls
+ *     that don't mind reasoning latency.
  *
- * If you want to add more models later, extend `CerebrasModel` and
- * the rate-limit notes below.
+ * The catalog shifts under us (llama3.1-8b and qwen-3-235b were
+ * dropped in mid-2026, breaking highlights with 404s) — verify against
+ * GET /v1/models before extending `CerebrasModel`.
  */
 
 const CEREBRAS_BASE_URL = "https://api.cerebras.ai/v1";
 
 export type CerebrasModel =
   | "gpt-oss-120b"
-  | "llama3.1-8b"
-  | "qwen-3-235b-a22b-instruct-2507"
+  | "gemma-4-31b"
   | "zai-glm-4.7";
 
 export interface CerebrasMessage {
